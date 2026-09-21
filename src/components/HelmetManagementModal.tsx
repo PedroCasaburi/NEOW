@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { Helmet, Employee, UserRole } from "../types";
 import { dataService } from "../services/dataService";
+import { formatMacAddress, isValidMacAddress } from "../utils/formatters";
 import { motion, AnimatePresence } from "motion/react";
 
 interface HelmetModalProps {
@@ -41,6 +42,7 @@ export default function HelmetManagementModal({
   const [editingHelmet, setEditingHelmet] = useState<Helmet | null>(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState("");
+  const [formError, setFormError] = useState("");
 
   const isReadOnly = userRole === "VIEWER";
 
@@ -64,7 +66,13 @@ export default function HelmetManagementModal({
 
   const handleSaveHelmet = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    setFormError("");
     if (isReadOnly || !editingHelmet) return;
+
+    if (editingHelmet.macAddress && !isValidMacAddress(editingHelmet.macAddress)) {
+      setFormError("Endereço MAC inválido. Formato esperado: XX:XX:XX:XX:XX:XX (apenas dígitos hexadecimais).");
+      return;
+    }
 
     await dataService.saveHelmet(editingHelmet);
     setSaveSuccessMsg("Capacete salvo com sucesso!");
@@ -356,8 +364,12 @@ export default function HelmetManagementModal({
                       <label className="block text-zinc-400 mb-1 font-semibold uppercase tracking-wider text-[10px]">Endereço MAC (ESP32)</label>
                       <input 
                         type="text"
+                        maxLength={17}
                         value={editingHelmet.macAddress || ""}
-                        onChange={(e) => setEditingHelmet({ ...editingHelmet, macAddress: e.target.value })}
+                        onChange={(e) => {
+                          setFormError("");
+                          setEditingHelmet({ ...editingHelmet, macAddress: formatMacAddress(e.target.value) });
+                        }}
                         className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white font-mono focus:outline-none focus:border-yellow-500"
                         placeholder="24:6F:28:B4:7E:10"
                       />
@@ -374,6 +386,12 @@ export default function HelmetManagementModal({
                       />
                     </div>
                   </div>
+
+                  {formError && (
+                    <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-[11px] font-medium">
+                      {formError}
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-2 gap-3">
                     <div>

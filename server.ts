@@ -8,6 +8,8 @@ import os from "os";
 
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
+import crypto from "crypto";
+import { Resend } from "resend";
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
@@ -28,6 +30,143 @@ if (supabaseUrl && supabaseKey && !supabaseUrl.includes("seu-projeto")) {
     console.warn("[Supabase Server] Erro ao conectar ao Supabase:", err);
   }
 }
+
+// ------------------------------------------------------------
+// INTEGRAÇÃO RESEND (E-MAIL TRANSACIONAL) & SEGURANÇA OTP
+// ------------------------------------------------------------
+const resendApiKey = (process.env.RESEND_API_KEY || "").trim();
+const resendFromEmail = (process.env.RESEND_FROM_EMAIL || "Industrial Safety Monitor <onboarding@resend.dev>").trim();
+let resend: Resend | null = null;
+
+if (resendApiKey && !resendApiKey.includes("sua_chave") && resendApiKey.startsWith("re_")) {
+  try {
+    resend = new Resend(resendApiKey);
+    console.log("[Resend] Cliente de e-mail transacional inicializado com sucesso.");
+  } catch (err) {
+    console.warn("[Resend] Falha ao instanciar cliente Resend:", err);
+  }
+} else {
+  console.log("[Resend] Chave de API em modo simulação/dev. Os códigos OTP serão exibidos no terminal.");
+}
+
+const OTP_SYSTEM_SALT = process.env.OTP_SALT || "ISM_SAFETY_SALT_2026_SECURE_#";
+
+function hashOtp(code: string, email: string): string {
+  return crypto.createHash("sha256").update(`${OTP_SYSTEM_SALT}:${email.toLowerCase()}:${code}:${OTP_SYSTEM_SALT}`).digest("hex");
+}
+
+function hashPasswordNode(plainText: string, salt: string = "ISM_SAFETY_SALT_2026_SECURE_#"): string {
+  if (plainText.startsWith("$ism_sha256$")) return plainText;
+  const hex = crypto.createHash("sha256").update(salt + plainText + salt).digest("hex");
+  return `$ism_sha256$${hex}`;
+}
+
+function buildOtpEmailHtml(userName: string, otpCode: string): string {
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Recuperação de Senha - Industrial Safety Monitor</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #09090b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #f4f4f5;">
+  <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #09090b; padding: 40px 20px;">
+    <tr>
+      <td align="center">
+        <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 540px; background-color: #18181b; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 16px; overflow: hidden; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);">
+          <tr>
+            <td style="background: linear-gradient(135deg, #18181b 0%, #27272a 100%); padding: 28px; border-bottom: 2px solid #eab308; text-align: center;">
+              <div style="display: inline-block; background-color: rgba(234, 179, 8, 0.15); border: 1px solid rgba(234, 179, 8, 0.4); border-radius: 12px; padding: 8px 16px; margin-bottom: 12px;">
+                <span style="color: #facc15; font-weight: 800; font-size: 14px; letter-spacing: 1px; text-transform: uppercase;">⚠️ INDUSTRIAL SAFETY MONITOR</span>
+              </div>
+              <h1 style="color: #ffffff; margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.5px;">Recuperação de Acesso e Credenciais</h1>
+              <p style="color: #a1a1aa; margin: 6px 0 0 0; font-size: 13px;">Centro de Operações Industriais (COI)</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 32px 28px;">
+              <p style="color: #d4d4d8; font-size: 14px; line-height: 1.6; margin-top: 0;">
+                Olá, <strong>${userName}</strong>,
+              </p>
+              <p style="color: #a1a1aa; font-size: 14px; line-height: 1.6;">
+                Recebemos uma solicitação de redefinição de senha para a sua conta operacional. Utilize o código de verificação de uso único (OTP) abaixo para prosseguir:
+              </p>
+              
+              <div style="background-color: #09090b; border: 2px dashed #eab308; border-radius: 12px; padding: 24px; text-align: center; margin: 28px 0;">
+                <span style="display: block; color: #a1a1aa; font-size: 11px; text-transform: uppercase; letter-spacing: 2px; font-weight: 700; margin-bottom: 8px;">CÓDIGO DE SEGURANÇA (OTP)</span>
+                <span style="font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace; font-size: 38px; font-weight: 800; letter-spacing: 10px; color: #facc15;">${otpCode}</span>
+                <span style="display: block; color: #71717a; font-size: 11px; margin-top: 8px;">Válido por 10 minutos</span>
+              </div>
+
+              <div style="background-color: rgba(239, 68, 68, 0.1); border-left: 4px solid #ef4444; border-radius: 4px; padding: 12px 16px; margin-bottom: 24px;">
+                <p style="margin: 0; color: #fca5a5; font-size: 12px; line-height: 1.5;">
+                  <strong>Importante:</strong> Nunca compartilhe este código com terceiros. Caso você não tenha solicitado esta redefinição, desconsidere esta mensagem ou notifique o administrador do sistema.
+                </p>
+              </div>
+
+              <p style="color: #71717a; font-size: 12px; margin: 0; line-height: 1.5;">
+                Por motivos de conformidade e cibersegurança industrial (OWASP), este código expira após 10 minutos ou após 5 tentativas incorretas.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="background-color: #121215; border-top: 1px solid rgba(255, 255, 255, 0.06); padding: 18px 28px; text-align: center;">
+              <p style="color: #52525b; font-size: 11px; margin: 0; text-transform: uppercase; letter-spacing: 1px;">
+                © 2026 Industrial Safety Monitor • Telemetria IoT & Cibersegurança
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+}
+
+function printDevOtpBanner(email: string, name: string, code: string) {
+  console.log("\n============================================================");
+  console.log("       [OTP SIMULATION / RESEND DEV] CÓDIGO GERADO");
+  console.log("============================================================");
+  console.log(`Destinatário:  ${name} <${email}>`);
+  console.log(`Código OTP:    >>>  ${code}  <<<`);
+  console.log("Validade:      10 minutos");
+  console.log("Hash SHA-256:  Criptografado com salt do sistema");
+  console.log("============================================================\n");
+}
+
+interface InMemoryPasswordReset {
+  id: string;
+  email: string;
+  code_hash: string;
+  attempts: number;
+  expires_at: number;
+  used: boolean;
+  created_at: number;
+}
+const inMemoryResets: InMemoryPasswordReset[] = [];
+
+async function runPasswordResetHousekeeping() {
+  try {
+    if (supabase) {
+      const { error } = await supabase.rpc("purge_expired_password_resets");
+      if (error) {
+        // Limpeza direta caso a função RPC não esteja criada no Supabase
+        const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        await supabase.from("password_resets").delete().lt("expires_at", cutoff);
+      }
+    }
+    // Limpeza de memória
+    const now = Date.now();
+    for (let i = inMemoryResets.length - 1; i >= 0; i--) {
+      if (inMemoryResets[i].expires_at < now - 24 * 60 * 60 * 1000 || (inMemoryResets[i].used && inMemoryResets[i].created_at < now - 3600000)) {
+        inMemoryResets.splice(i, 1);
+      }
+    }
+  } catch (err) {
+    console.warn("[Housekeeping] Erro na limpeza periódica:", err);
+  }
+}
+
 
 function getLocalIpAddresses() {
   const interfaces = os.networkInterfaces();
@@ -137,6 +276,8 @@ async function startServer() {
     email: string;
     phone: string;
     password: string;
+    token_version?: number;
+    last_password_change?: string;
   }
 
   const users: UserData[] = [
@@ -179,10 +320,367 @@ async function startServer() {
   app.post("/api/register", (req, res) => {
     const userData: UserData = req.body;
     if (users.find(u => u.username === userData.username)) {
-      return res.status(400).json({ success: false, message: "Nome de usu├írio j├í existe." });
+      return res.status(400).json({ success: false, message: "Nome de usuário já existe." });
     }
     users.push(userData);
-    res.json({ success: true, message: "Usu├írio cadastrado com sucesso." });
+    res.json({ success: true, message: "Usuário cadastrado com sucesso." });
+  });
+
+  // ------------------------------------------------------------
+  // CIBERSEGURANÇA: ENDPOINTS DE RECUPERAÇÃO DE SENHA COM OTP
+  // ------------------------------------------------------------
+  const forgotPasswordRates = new Map<string, { count: number; resetAt: number }>();
+  const forgotPasswordRateLimit = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const ip = req.ip || req.socket.remoteAddress || "127.0.0.1";
+    const now = Date.now();
+    const current = forgotPasswordRates.get(ip);
+    if (!current || now > current.resetAt) {
+      forgotPasswordRates.set(ip, { count: 1, resetAt: now + 15 * 60 * 1000 });
+      return next();
+    }
+    if (current.count >= 3) {
+      return res.status(429).json({
+        success: false,
+        message: "Muitas solicitações de recuperação deste IP. Por segurança, aguarde 15 minutos."
+      });
+    }
+    current.count++;
+    next();
+  };
+
+  app.post("/api/auth/forgot-password", forgotPasswordRateLimit, async (req, res) => {
+    try {
+      const { email } = req.body;
+      if (!email || typeof email !== "string") {
+        return res.status(400).json({ success: false, message: "Endereço de e-mail é obrigatório." });
+      }
+
+      const normalizedEmail = email.trim().toLowerCase();
+      const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+      if (!emailRegex.test(normalizedEmail)) {
+        return res.status(400).json({ success: false, message: "Formato de e-mail inválido." });
+      }
+
+      let userFound = false;
+      let userName = "Operador";
+      let userUsername = "";
+
+      // 1. Verificar no banco Supabase
+      if (supabase) {
+        try {
+          const { data: dbUsers, error } = await supabase
+            .from("users")
+            .select("id, username, first_name, last_name, email, active")
+            .ilike("email", normalizedEmail);
+
+          if (!error && dbUsers && dbUsers.length > 0) {
+            const u = dbUsers[0];
+            if (u.active !== false) {
+              userFound = true;
+              userName = `${u.first_name || ""} ${u.last_name || ""}`.trim() || u.username || "Operador";
+              userUsername = u.username || "";
+            }
+          }
+        } catch (dbErr) {
+          console.warn("[Forgot-Password] Erro ao consultar Supabase:", dbErr);
+        }
+      }
+
+      // 2. Verificar na lista local em memória
+      if (!userFound) {
+        const localUser = users.find(u => u.email.toLowerCase() === normalizedEmail);
+        if (localUser) {
+          userFound = true;
+          userName = `${localUser.firstName} ${localUser.lastName}`.trim();
+          userUsername = localUser.username;
+        }
+      }
+
+      // 3. Se usuário existir, gerar e persistir OTP com hash criptográfico seguro
+      if (userFound) {
+        const now = Date.now();
+        const expiresAt = now + 10 * 60 * 1000; // 10 minutos
+        const expiresAtIso = new Date(expiresAt).toISOString();
+
+        // Invalida códigos ativos prévios deste e-mail
+        if (supabase) {
+          try {
+            await supabase
+              .from("password_resets")
+              .update({ used: true })
+              .eq("email", normalizedEmail)
+              .eq("used", false);
+          } catch (e) {
+            console.warn("[Forgot-Password] Falha ao invalidar resets anteriores:", e);
+          }
+        }
+        inMemoryResets.forEach(r => {
+          if (r.email === normalizedEmail && !r.used) r.used = true;
+        });
+
+        // Geração do código numérico de 6 dígitos
+        const otpCode = Math.floor(100000 + crypto.randomInt(900000)).toString();
+        const codeHash = hashOtp(otpCode, normalizedEmail);
+
+        if (supabase) {
+          try {
+            await supabase.from("password_resets").insert({
+              email: normalizedEmail,
+              code_hash: codeHash,
+              attempts: 0,
+              expires_at: expiresAtIso,
+              used: false
+            });
+          } catch (e) {
+            console.warn("[Forgot-Password] Falha ao gravar no Supabase:", e);
+          }
+        }
+
+        inMemoryResets.push({
+          id: `PR-${Date.now()}`,
+          email: normalizedEmail,
+          code_hash: codeHash,
+          attempts: 0,
+          expires_at: expiresAt,
+          used: false,
+          created_at: now
+        });
+
+        recentActivities.unshift({
+          id: `audit-${Date.now()}`,
+          title: "Recuperação Solicitada",
+          description: `Código OTP solicitado para @${userUsername || normalizedEmail}`,
+          timestamp: Date.now(),
+          type: "INFO"
+        });
+        if (recentActivities.length > 20) recentActivities.pop();
+        broadcastUpdate();
+
+        // Disparo por Resend ou exibição no terminal
+        if (resend) {
+          try {
+            const htmlContent = buildOtpEmailHtml(userName, otpCode);
+            await resend.emails.send({
+              from: resendFromEmail,
+              to: [normalizedEmail],
+              subject: `Código de Recuperação: ${otpCode} - Industrial Safety Monitor`,
+              html: htmlContent
+            });
+            console.log(`[Resend] E-mail de OTP enviado com sucesso para ${normalizedEmail}`);
+          } catch (mailErr) {
+            console.error("[Resend] Erro ao despachar e-mail:", mailErr);
+            printDevOtpBanner(normalizedEmail, userName, otpCode);
+          }
+        } else {
+          printDevOtpBanner(normalizedEmail, userName, otpCode);
+        }
+      } else {
+        // OWASP: Anti-enumeração de contas (mensagem idêntica)
+        console.log(`[Forgot-Password] Solicitação ignorada para e-mail inexistente: ${normalizedEmail}`);
+      }
+
+      return res.json({
+        success: true,
+        message: "Se o e-mail informado estiver cadastrado no sistema, um código de uso único (OTP) foi enviado."
+      });
+    } catch (err) {
+      console.error("[Forgot-Password] Erro interno:", err);
+      return res.status(500).json({ success: false, message: "Erro interno no servidor ao processar a solicitação." });
+    }
+  });
+
+  const resetPasswordRates = new Map<string, { count: number; resetAt: number }>();
+  const resetPasswordRateLimit = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const ip = req.ip || req.socket.remoteAddress || "127.0.0.1";
+    const now = Date.now();
+    const current = resetPasswordRates.get(ip);
+    if (!current || now > current.resetAt) {
+      resetPasswordRates.set(ip, { count: 1, resetAt: now + 15 * 60 * 1000 });
+      return next();
+    }
+    if (current.count >= 15) {
+      return res.status(429).json({
+        success: false,
+        message: "Muitas tentativas de validação. Por segurança, aguarde alguns minutos."
+      });
+    }
+    current.count++;
+    next();
+  };
+
+  app.post("/api/auth/reset-password", resetPasswordRateLimit, async (req, res) => {
+    try {
+      const { email, code, newPassword } = req.body;
+      if (!email || !code || !newPassword) {
+        return res.status(400).json({ success: false, message: "E-mail, código de verificação e nova senha são obrigatórios." });
+      }
+
+      const normalizedEmail = email.trim().toLowerCase();
+      const cleanCode = String(code).trim();
+
+      if (cleanCode.length !== 6 || !/^\d{6}$/.test(cleanCode)) {
+        return res.status(400).json({ success: false, message: "O código deve conter exatamente 6 dígitos numéricos." });
+      }
+
+      if (typeof newPassword !== "string" || newPassword.length < 4) {
+        return res.status(400).json({ success: false, message: "A nova senha deve possuir ao menos 4 caracteres." });
+      }
+
+      const now = Date.now();
+      let activeRecord: any = null;
+      let isSupabaseSource = false;
+
+      // 1. Consulta no Supabase
+      if (supabase) {
+        try {
+          const { data: dbRecords, error } = await supabase
+            .from("password_resets")
+            .select("*")
+            .eq("email", normalizedEmail)
+            .eq("used", false)
+            .gt("expires_at", new Date(now).toISOString())
+            .order("created_at", { ascending: false })
+            .limit(1);
+
+          if (!error && dbRecords && dbRecords.length > 0) {
+            activeRecord = dbRecords[0];
+            isSupabaseSource = true;
+          }
+        } catch (e) {
+          console.warn("[Reset-Password] Falha ao consultar Supabase:", e);
+        }
+      }
+
+      // 2. Consulta em memória
+      if (!activeRecord) {
+        const memRecord = inMemoryResets
+          .filter(r => r.email === normalizedEmail && !r.used && r.expires_at > now)
+          .sort((a, b) => b.created_at - a.created_at)[0];
+        if (memRecord) {
+          activeRecord = memRecord;
+          isSupabaseSource = false;
+        }
+      }
+
+      if (!activeRecord) {
+        return res.status(400).json({
+          success: false,
+          message: "Código de verificação inexistente ou expirado. Solicite um novo código."
+        });
+      }
+
+      // 3. Verificação de limite de tentativas
+      if (activeRecord.attempts >= 5) {
+        if (isSupabaseSource && supabase) {
+          await supabase.from("password_resets").update({ used: true }).eq("id", activeRecord.id);
+        }
+        activeRecord.used = true;
+        return res.status(400).json({
+          success: false,
+          message: "Limite de tentativas excedido para este código. Solicite um novo código."
+        });
+      }
+
+      // 4. Comparação segura com timingSafeEqual
+      const inputHash = hashOtp(cleanCode, normalizedEmail);
+      const storedHash = activeRecord.code_hash;
+
+      const hashBufferStored = Buffer.from(storedHash, "hex");
+      const hashBufferInput = Buffer.from(inputHash, "hex");
+
+      const isOtpValid =
+        hashBufferStored.length === hashBufferInput.length &&
+        crypto.timingSafeEqual(hashBufferStored, hashBufferInput);
+
+      if (!isOtpValid) {
+        const nextAttempts = (activeRecord.attempts || 0) + 1;
+        const remaining = Math.max(0, 5 - nextAttempts);
+
+        if (isSupabaseSource && supabase) {
+          await supabase
+            .from("password_resets")
+            .update({
+              attempts: nextAttempts,
+              used: nextAttempts >= 5
+            })
+            .eq("id", activeRecord.id);
+        }
+        activeRecord.attempts = nextAttempts;
+        if (nextAttempts >= 5) activeRecord.used = true;
+
+        if (remaining > 0) {
+          return res.status(400).json({
+            success: false,
+            message: `Código incorreto. Você ainda tem ${remaining} tentativa(s).`
+          });
+        } else {
+          return res.status(400).json({
+            success: false,
+            message: "Limite de 5 tentativas atingido. O código foi invalidado por segurança."
+          });
+        }
+      }
+
+      // 5. Sucesso: marcar código como utilizado
+      if (isSupabaseSource && supabase) {
+        await supabase.from("password_resets").update({ used: true }).eq("id", activeRecord.id);
+      }
+      activeRecord.used = true;
+
+      // 6. Hashear a nova senha e revogar sessões ativas
+      const hashedPassword = hashPasswordNode(newPassword);
+      const nowIso = new Date().toISOString();
+
+      if (supabase) {
+        try {
+          const { data: dbUsers } = await supabase
+            .from("users")
+            .select("id, token_version")
+            .ilike("email", normalizedEmail);
+
+          if (dbUsers && dbUsers.length > 0) {
+            const currentTokenVersion = dbUsers[0].token_version || 1;
+            await supabase
+              .from("users")
+              .update({
+                password: hashedPassword,
+                token_version: currentTokenVersion + 1,
+                last_password_change: nowIso
+              })
+              .eq("id", dbUsers[0].id);
+          }
+        } catch (dbErr) {
+          console.error("[Reset-Password] Erro ao atualizar senha no Supabase:", dbErr);
+        }
+      }
+
+      // Atualiza usuário local
+      const localUser = users.find(u => u.email.toLowerCase() === normalizedEmail);
+      if (localUser) {
+        localUser.password = newPassword;
+        localUser.token_version = (localUser.token_version || 1) + 1;
+        localUser.last_password_change = nowIso;
+      }
+
+      recentActivities.unshift({
+        id: `audit-reset-${Date.now()}`,
+        title: "Senha Redefinida",
+        description: `Senha de ${localUser ? '@' + localUser.username : normalizedEmail} redefinida via OTP`,
+        timestamp: Date.now(),
+        type: "INFO"
+      });
+      if (recentActivities.length > 20) recentActivities.pop();
+      broadcastUpdate();
+
+      console.log(`[Reset-Password] Senha redefinida com sucesso para ${normalizedEmail}`);
+      return res.json({
+        success: true,
+        message: "Senha redefinida com sucesso! Você já pode realizar o login com suas novas credenciais."
+      });
+    } catch (err) {
+      console.error("[Reset-Password] Erro interno:", err);
+      return res.status(500).json({ success: false, message: "Erro interno no servidor ao processar a redefinição de senha." });
+    }
   });
 
   app.get("/api/stats", (_req, res) => {
@@ -533,6 +1031,10 @@ async function startServer() {
       broadcastUpdate();
     }
   }, 3000);
+
+  // Rotina de Housekeeping: limpeza periódica de tokens OTP expirados (a cada 30 minutos)
+  runPasswordResetHousekeeping();
+  setInterval(runPasswordResetHousekeeping, 30 * 60 * 1000);
 
   httpServer.listen(PORT, "0.0.0.0", () => {
     const ips = getLocalIpAddresses();

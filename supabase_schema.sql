@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS users (
     phone TEXT,
     company_id TEXT REFERENCES companies(id) ON DELETE SET NULL,
     active BOOLEAN DEFAULT TRUE,
+    token_version INTEGER DEFAULT 1,
+    last_password_change TIMESTAMPTZ DEFAULT NOW(),
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -246,6 +248,63 @@ ALTER TABLE helmets REPLICA IDENTITY FULL;
 ALTER TABLE accident_events REPLICA IDENTITY FULL;
 ALTER TABLE safety_guidelines REPLICA IDENTITY FULL;
 
+-- ============================================================
+-- 9. TABELA DE RECUPERAÇÃO DE SENHA (OTP com Hash Seguro)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS password_resets (
+    id TEXT PRIMARY KEY DEFAULT ('PR-' || substr(md5(random()::text), 1, 10)),
+    email TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    attempts INTEGER DEFAULT 0,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_password_resets_email ON password_resets (email);
+CREATE INDEX IF NOT EXISTS idx_password_resets_expires ON password_resets (expires_at);
+CREATE INDEX IF NOT EXISTS idx_password_resets_used ON password_resets (used);
+
+ALTER TABLE password_resets ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow public access to password_resets" ON password_resets FOR ALL USING (true) WITH CHECK (true);
+
+-- Adicionar tabela password_resets à publicação de Realtime
+DO $$
+BEGIN
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE password_resets;
+  EXCEPTION
+    WHEN duplicate_object THEN NULL;
+  END;
+END $$;
+
+ALTER TABLE password_resets REPLICA IDENTITY FULL;
+
+-- Adicionar colunas de revogação de sessão na tabela users (idempotente)
+DO $$
+BEGIN
+  BEGIN
+    ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 1;
+  EXCEPTION WHEN duplicate_column THEN NULL;
+  END;
+  BEGIN
+    ALTER TABLE users ADD COLUMN last_password_change TIMESTAMPTZ DEFAULT NOW();
+  EXCEPTION WHEN duplicate_column THEN NULL;
+  END;
+END $$;
+
+-- ============================================================
+-- ROTINA DE HIGIENIZAÇÃO (HOUSEKEEPING) - LIMPEZA AUTOMÁTICA
+-- ============================================================
+CREATE OR REPLACE FUNCTION purge_expired_password_resets()
+RETURNS void AS $$
+BEGIN
+    DELETE FROM password_resets
+    WHERE expires_at < NOW() - INTERVAL '1 day'
+       OR (used = TRUE AND created_at < NOW() - INTERVAL '1 hour');
+END;
+$$ LANGUAGE plpgsql;
+
 -- Mensagem de confirmação
-SELECT 'Schema do Industrial Safety Monitor com Realtime Bidirecional e Cibersegurança configurados com sucesso!' AS status;
+SELECT 'Schema do Industrial Safety Monitor com Realtime Bidirecional, OTP Seguro e Cibersegurança configurados com sucesso!' AS status;
 

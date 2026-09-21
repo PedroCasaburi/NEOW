@@ -126,7 +126,7 @@ export function isValidCoordinate(lat: number, lng: number): boolean {
 export interface SecurityAuditRecord {
   id: string;
   timestamp: number;
-  action: "LOGIN_SUCCESS" | "LOGIN_FAILED" | "ROLE_CHANGED" | "USER_CREATED" | "USER_DISABLED" | "EMERGENCY_ACKNOWLEDGED";
+  action: "LOGIN_SUCCESS" | "LOGIN_FAILED" | "ROLE_CHANGED" | "USER_CREATED" | "USER_DISABLED" | "EMERGENCY_ACKNOWLEDGED" | "PASSWORD_RESET_REQUEST" | "PASSWORD_RESET";
   actorUsername: string;
   target?: string;
   details?: string;

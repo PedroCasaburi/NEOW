@@ -5,10 +5,11 @@ import { motion } from "motion/react";
 interface LoginProps {
   onLogin: (user: string, pass: string) => void;
   onGoToRegister: () => void;
+  onForgotPassword?: () => void;
   error?: string;
 }
 
-export default function Login({ onLogin, onGoToRegister, error }: LoginProps) {
+export default function Login({ onLogin, onGoToRegister, onForgotPassword, error }: LoginProps) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -91,6 +92,17 @@ export default function Login({ onLogin, onGoToRegister, error }: LoginProps) {
               className="absolute inset-y-0 right-4 flex items-center text-zinc-500 hover:text-zinc-300 transition-colors"
             >
               {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+            </button>
+          </div>
+
+          {/* Link para recuperação de senha */}
+          <div className="text-right -mt-1">
+            <button
+              type="button"
+              onClick={() => onForgotPassword?.()}
+              className="text-[11px] text-yellow-500/70 hover:text-yellow-400 transition-colors font-medium hover:underline"
+            >
+              Esqueceu sua senha?
             </button>
           </div>
 

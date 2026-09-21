@@ -12,6 +12,7 @@ import UserManagementModal from "./components/UserManagementModal";
 import SafetyAnalyticsModal from "./components/SafetyAnalyticsModal";
 import CookieConsentBanner from "./components/CookieConsentBanner";
 import PrivacyPolicyModal from "./components/PrivacyPolicyModal";
+import ForgotPasswordModal from "./components/ForgotPasswordModal";
 import { dataService } from "./services/dataService";
 import { AlertCircle, Bell, X, ArrowLeft, Users as UsersIcon } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
@@ -38,6 +39,7 @@ export default function App() {
   const [showAnalyticsModal, setShowAnalyticsModal] = useState(false);
   const [showPrivacyPolicyModal, setShowPrivacyPolicyModal] = useState(false);
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
+  const [showForgotPasswordModal, setShowForgotPasswordModal] = useState(false);
 
   const [stats, setStats] = useState<SystemStats>({
     signalsToday: 0,
@@ -310,6 +312,7 @@ export default function App() {
       <Login 
         onLogin={handleLogin} 
         onGoToRegister={() => setAuthView("REGISTER")}
+        onForgotPassword={() => setShowForgotPasswordModal(true)}
         error={loginError} 
       />
     );
@@ -496,6 +499,13 @@ export default function App() {
       {/* Banner de Gestão de Cookies e Consentimento LGPD */}
       <CookieConsentBanner 
         onOpenPrivacyPolicy={() => setShowPrivacyPolicyModal(true)} 
+      />
+
+      {/* Modal de Recuperação de Senha com OTP */}
+      <ForgotPasswordModal
+        isOpen={showForgotPasswordModal}
+        onClose={() => setShowForgotPasswordModal(false)}
+        onSuccess={() => setShowForgotPasswordModal(false)}
       />
     </>
   );

@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { User, Lock, Mail, Phone, Briefcase, Hash, MapPin, AlertTriangle, ArrowLeft } from "lucide-react";
 import { motion } from "motion/react";
+import { formatCPF, formatPhone, isValidCPF, isValidPhone, isValidEmail } from "../utils/formatters";
 
 interface RegisterProps {
   onRegister: (data: any) => Promise<boolean>;
@@ -24,9 +25,26 @@ export default function Register({ onRegister, onGoBack }: RegisterProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsSubmitting(true);
     setError("");
-    
+
+    if (!isValidCPF(formData.cpf)) {
+      setError("CPF inválido segundo o algoritmo oficial. Verifique os dígitos.");
+      return;
+    }
+    if (!isValidEmail(formData.email)) {
+      setError("Endereço de e-mail com formato inválido.");
+      return;
+    }
+    if (!isValidPhone(formData.phone)) {
+      setError("Telefone incompleto. Digite DDD + número (mínimo 10 dígitos).");
+      return;
+    }
+    if (formData.password.length < 4) {
+      setError("A senha deve conter ao menos 4 caracteres.");
+      return;
+    }
+
+    setIsSubmitting(true);
     try {
       const success = await onRegister(formData);
       if (!success) {
@@ -40,7 +58,13 @@ export default function Register({ onRegister, onGoBack }: RegisterProps) {
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
+    let value = e.target.value;
+    if (e.target.name === "cpf") {
+      value = formatCPF(value);
+    } else if (e.target.name === "phone") {
+      value = formatPhone(value);
+    }
+    setFormData({ ...formData, [e.target.name]: value });
   };
 
   return (
@@ -132,10 +156,11 @@ export default function Register({ onRegister, onGoBack }: RegisterProps) {
             <input
               type="text"
               name="cpf"
-              placeholder="CPF"
+              placeholder="CPF (000.000.000-00)"
+              maxLength={14}
               value={formData.cpf}
               onChange={handleChange}
-              className="w-full bg-[#2a2424] border border-white/5 rounded-xl py-4 pl-12 pr-4 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-yellow-500/50 transition-all"
+              className="w-full bg-[#2a2424] border border-white/5 rounded-xl py-4 pl-12 pr-4 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-yellow-500/50 transition-all font-mono"
               required
             />
           </div>
@@ -192,10 +217,11 @@ export default function Register({ onRegister, onGoBack }: RegisterProps) {
             <input
               type="text"
               name="phone"
-              placeholder="Telefone"
+              placeholder="Telefone ((11) 98765-4321)"
+              maxLength={15}
               value={formData.phone}
               onChange={handleChange}
-              className="w-full bg-[#2a2424] border border-white/5 rounded-xl py-4 pl-12 pr-4 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-yellow-500/50 transition-all"
+              className="w-full bg-[#2a2424] border border-white/5 rounded-xl py-4 pl-12 pr-4 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-yellow-500/50 transition-all font-mono"
               required
             />
           </div>

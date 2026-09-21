@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { UserRecord, UserRole } from "../types";
 import { dataService } from "../services/dataService";
-import { formatCPF, formatPhone } from "../utils/formatters";
+import { formatCPF, formatPhone, isValidCPF, isValidEmail, isValidPhone } from "../utils/formatters";
 import { maskCPF } from "../utils/security";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -93,6 +93,31 @@ export default function UserManagementModal({
 
     if (!editingUser) return;
 
+    if (!editingUser.username || editingUser.username.trim().length < 3) {
+      setErrorMsg("O username deve possuir ao menos 3 caracteres.");
+      return;
+    }
+
+    if (editingUser.password && editingUser.password.length < 4) {
+      setErrorMsg("A senha deve ter no mínimo 4 caracteres.");
+      return;
+    }
+
+    if (editingUser.cpf && !isValidCPF(editingUser.cpf)) {
+      setErrorMsg("CPF do usuário inválido segundo o algoritmo oficial (módulo 11).");
+      return;
+    }
+
+    if (editingUser.email && !isValidEmail(editingUser.email)) {
+      setErrorMsg("Endereço de e-mail com formato inválido.");
+      return;
+    }
+
+    if (editingUser.phone && !isValidPhone(editingUser.phone)) {
+      setErrorMsg("Telefone incompleto. Digite DDD + número (mínimo 10 dígitos).");
+      return;
+    }
+
     // Se for COMPANY_ADMIN, não pode criar ou editar para MASTER
     if (!isMaster && editingUser.role === "MASTER") {
       setErrorMsg("Apenas Administradores Master podem conceder ou alterar permissões de nível Master.");
@@ -108,6 +133,7 @@ export default function UserManagementModal({
   };
 
   const openNewUserForm = () => {
+    setErrorMsg("");
     const newUser: UserRecord = {
       firstName: "",
       lastName: "",
@@ -443,8 +469,12 @@ export default function UserManagementModal({
                       <label className="block text-zinc-400 mb-1 font-semibold uppercase tracking-wider text-[10px]">CPF</label>
                       <input 
                         type="text"
+                        maxLength={14}
                         value={editingUser.cpf || ""}
-                        onChange={(e) => setEditingUser({ ...editingUser, cpf: formatCPF(e.target.value) })}
+                        onChange={(e) => {
+                          setErrorMsg("");
+                          setEditingUser({ ...editingUser, cpf: formatCPF(e.target.value) });
+                        }}
                         className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white font-mono focus:outline-none focus:border-yellow-500"
                         placeholder="000.000.000-00"
                       />
@@ -489,13 +519,23 @@ export default function UserManagementModal({
                       <label className="block text-zinc-400 mb-1 font-semibold uppercase tracking-wider text-[10px]">Telefone</label>
                       <input 
                         type="text"
+                        maxLength={15}
                         value={editingUser.phone}
-                        onChange={(e) => setEditingUser({ ...editingUser, phone: formatPhone(e.target.value) })}
-                        className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white focus:outline-none focus:border-yellow-500"
+                        onChange={(e) => {
+                          setErrorMsg("");
+                          setEditingUser({ ...editingUser, phone: formatPhone(e.target.value) });
+                        }}
+                        className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white font-mono focus:outline-none focus:border-yellow-500"
                         placeholder="(11) 98765-4321"
                       />
                     </div>
                   </div>
+
+                  {errorMsg && (
+                    <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-[11px] font-medium">
+                      {errorMsg}
+                    </div>
+                  )}
 
                   <div className="flex justify-end gap-3 pt-4 border-t border-white/10">
                     <button

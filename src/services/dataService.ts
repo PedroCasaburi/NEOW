@@ -1100,5 +1100,70 @@ export const dataService = {
       historicoImpactos: accidents,
       usuariosAutorizados: users.map(u => ({ nome: `${u.firstName} ${u.lastName}`, role: u.role, usuario: u.username, depto: u.department }))
     };
+  },
+
+  // ------------------------------------------------------------
+  // RECUPERAÇÃO DE SENHA COM OTP (RESEND / OWASP)
+  // ------------------------------------------------------------
+  async requestPasswordReset(email: string): Promise<{ success: boolean; message: string }> {
+    const apiBase = (import.meta as any).env?.VITE_API_URL || "";
+    try {
+      const res = await fetch(`${apiBase}/api/auth/forgot-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim().toLowerCase() })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        const log = createAuditLog("PASSWORD_RESET_REQUEST", email, undefined, "Solicitação de código OTP enviada");
+        const logs = getFromStorage<SecurityAuditRecord[]>("ism_audit_logs", []);
+        logs.unshift(log);
+        saveToStorage("ism_audit_logs", logs.slice(0, 100));
+        return { success: true, message: data.message || "Se o e-mail estiver cadastrado, um código foi enviado." };
+      } else {
+        return { success: false, message: data.message || "Erro ao solicitar código de recuperação." };
+      }
+    } catch (e) {
+      console.warn("[dataService] Erro ao conectar ao servidor para forgot-password:", e);
+      return { success: false, message: "Não foi possível conectar ao servidor. Verifique sua conexão." };
+    }
+  },
+
+  async resetPasswordWithOtp(email: string, code: string, newPassword: string): Promise<{ success: boolean; message: string }> {
+    const apiBase = (import.meta as any).env?.VITE_API_URL || "";
+    try {
+      const res = await fetch(`${apiBase}/api/auth/reset-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: email.trim().toLowerCase(),
+          code: code.trim(),
+          newPassword
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        const log = createAuditLog("PASSWORD_RESET", email, undefined, "Senha redefinida com sucesso via código OTP");
+        const logs = getFromStorage<SecurityAuditRecord[]>("ism_audit_logs", []);
+        logs.unshift(log);
+        saveToStorage("ism_audit_logs", logs.slice(0, 100));
+
+        // Atualizar no storage local se o usuário existir localmente
+        const localUsers = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
+        const idx = localUsers.findIndex(u => u.email.toLowerCase() === email.trim().toLowerCase());
+        if (idx >= 0) {
+          const hashed = await hashPassword(newPassword);
+          localUsers[idx].password = hashed;
+          saveToStorage("ism_users", localUsers);
+        }
+
+        return { success: true, message: data.message || "Senha redefinida com sucesso!" };
+      } else {
+        return { success: false, message: data.message || "Código inválido ou expirado." };
+      }
+    } catch (e) {
+      console.warn("[dataService] Erro ao conectar ao servidor para reset-password:", e);
+      return { success: false, message: "Não foi possível conectar ao servidor para validar o código." };
+    }
   }
 };

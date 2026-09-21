@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { Employee, Helmet, UserRole } from "../types";
 import { dataService } from "../services/dataService";
-import { formatCPF, formatPhone } from "../utils/formatters";
+import { formatCPF, formatPhone, isValidCPF } from "../utils/formatters";
 import { maskCPF } from "../utils/security";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -37,10 +37,11 @@ export default function EmployeeManagementModal({
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [helmets, setHelmets] = useState<Helmet[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
-  const [filterDepartment, setFilterDepartment] = useState("ALL");
+  const [filterDepartment, setFilterDepartment] = useState<string>("ALL");
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [successMsg, setSuccessMsg] = useState("");
+  const [formError, setFormError] = useState("");
 
   const isReadOnly = userRole === "VIEWER";
 
@@ -68,7 +69,13 @@ export default function EmployeeManagementModal({
 
   const handleSaveEmployee = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    setFormError("");
     if (isReadOnly || !editingEmployee) return;
+
+    if (editingEmployee.cpf && !isValidCPF(editingEmployee.cpf)) {
+      setFormError("CPF do colaborador inválido segundo o algoritmo oficial (módulo 11).");
+      return;
+    }
 
     await dataService.saveEmployee(editingEmployee);
     setSuccessMsg("Operador atualizado com sucesso!");
@@ -361,8 +368,12 @@ export default function EmployeeManagementModal({
                       <label className="block text-zinc-400 mb-1 font-semibold uppercase tracking-wider text-[10px]">CPF</label>
                       <input 
                         type="text"
+                        maxLength={14}
                         value={editingEmployee.cpf || ""}
-                        onChange={(e) => setEditingEmployee({ ...editingEmployee, cpf: formatCPF(e.target.value) })}
+                        onChange={(e) => {
+                          setFormError("");
+                          setEditingEmployee({ ...editingEmployee, cpf: formatCPF(e.target.value) });
+                        }}
                         className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white font-mono focus:outline-none focus:border-yellow-500"
                         placeholder="000.000.000-00"
                       />
@@ -439,11 +450,26 @@ export default function EmployeeManagementModal({
                     <input 
                       type="text"
                       value={editingEmployee.emergencyContact || ""}
-                      onChange={(e) => setEditingEmployee({ ...editingEmployee, emergencyContact: e.target.value })}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        // Se usuário digitar números diretamente, aplica máscara progressiva de telefone
+                        const cleanDigits = val.replace(/\D/g, "");
+                        let formattedVal = val;
+                        if (cleanDigits.length > 0 && !val.includes("(") && !val.includes(")") && cleanDigits.length <= 11) {
+                          formattedVal = formatPhone(val);
+                        }
+                        setEditingEmployee({ ...editingEmployee, emergencyContact: formattedVal });
+                      }}
                       className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white focus:outline-none focus:border-yellow-500"
                       placeholder="Ex: (11) 98888-1111 (Esposa - Mariana)"
                     />
                   </div>
+
+                  {formError && (
+                    <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-[11px] font-medium">
+                      {formError}
+                    </div>
+                  )}
 
                   <div className="flex justify-end gap-3 pt-4 border-t border-white/10">
                     <button
