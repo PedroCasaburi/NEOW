@@ -30,6 +30,7 @@ export default function App() {
   const [userRole, setUserRole] = useState<UserRole>("COMPANY_ADMIN");
   const [view, setView] = useState<"HOME" | "MAP">("HOME");
   const [loginError, setLoginError] = useState("");
+  const [loginSuccessMessage, setLoginSuccessMessage] = useState("");
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
 
   // Estados dos Modais do Sistema & LGPD
@@ -207,6 +208,8 @@ export default function App() {
       setUserRole(authRes.role || "COMPANY_ADMIN");
       setCurrentUser(authRes.user);
       setLoginError("");
+      setLoginSuccessMessage("");
+      setShowForgotPasswordModal(false);
       return;
     }
 
@@ -236,6 +239,8 @@ export default function App() {
           });
         }
         setLoginError("");
+        setLoginSuccessMessage("");
+        setShowForgotPasswordModal(false);
         return;
       }
     } catch {}
@@ -300,21 +305,56 @@ export default function App() {
   const selectedEmployee = employees.find(e => e.id === selectedEmployeeId) || null;
 
   if (!isAuthenticated) {
-    if (authView === "REGISTER") {
-      return (
-        <Register 
-          onRegister={handleRegister} 
-          onGoBack={() => setAuthView("LOGIN")} 
-        />
-      );
-    }
     return (
-      <Login 
-        onLogin={handleLogin} 
-        onGoToRegister={() => setAuthView("REGISTER")}
-        onForgotPassword={() => setShowForgotPasswordModal(true)}
-        error={loginError} 
-      />
+      <>
+        {authView === "REGISTER" ? (
+          <Register 
+            onRegister={handleRegister} 
+            onGoBack={() => {
+              setAuthView("LOGIN");
+              setLoginError("");
+            }} 
+          />
+        ) : (
+          <Login 
+            onLogin={handleLogin} 
+            onGoToRegister={() => {
+              setAuthView("REGISTER");
+              setLoginError("");
+              setLoginSuccessMessage("");
+            }}
+            onForgotPassword={() => {
+              setLoginError("");
+              setLoginSuccessMessage("");
+              setShowForgotPasswordModal(true);
+            }}
+            error={loginError} 
+            successMessage={loginSuccessMessage}
+          />
+        )}
+
+        {/* Modal de Recuperação de Senha com OTP - Exibido diretamente na tela de Login */}
+        <ForgotPasswordModal
+          isOpen={showForgotPasswordModal}
+          onClose={() => setShowForgotPasswordModal(false)}
+          onSuccess={() => {
+            setShowForgotPasswordModal(false);
+            setLoginError("");
+            setLoginSuccessMessage("Senha redefinida com sucesso! Você já pode entrar com sua nova senha.");
+          }}
+        />
+
+        {/* Modal de Política de Privacidade e Diretrizes LGPD */}
+        <PrivacyPolicyModal
+          isOpen={showPrivacyPolicyModal}
+          onClose={() => setShowPrivacyPolicyModal(false)}
+        />
+
+        {/* Banner de Gestão de Cookies e Consentimento LGPD */}
+        <CookieConsentBanner 
+          onOpenPrivacyPolicy={() => setShowPrivacyPolicyModal(true)} 
+        />
+      </>
     );
   }
 

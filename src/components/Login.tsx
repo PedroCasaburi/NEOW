@@ -7,9 +7,10 @@ interface LoginProps {
   onGoToRegister: () => void;
   onForgotPassword?: () => void;
   error?: string;
+  successMessage?: string;
 }
 
-export default function Login({ onLogin, onGoToRegister, onForgotPassword, error }: LoginProps) {
+export default function Login({ onLogin, onGoToRegister, onForgotPassword, error, successMessage }: LoginProps) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -59,6 +60,18 @@ export default function Login({ onLogin, onGoToRegister, onForgotPassword, error
           <p className="text-xs text-zinc-400">Sistema de Monitoramento com Capacetes ESP32</p>
         </div>
 
+        {/* Banner de Sucesso (ex: após redefinição de senha) */}
+        {successMessage && (
+          <motion.div 
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-4 p-3 rounded-xl bg-green-500/10 border border-green-500/30 text-green-400 text-xs text-center flex items-center justify-center gap-2"
+          >
+            <span>✓</span>
+            <span>{successMessage}</span>
+          </motion.div>
+        )}
+
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="relative">
             <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
@@ -96,13 +109,16 @@ export default function Login({ onLogin, onGoToRegister, onForgotPassword, error
           </div>
 
           {/* Link para recuperação de senha */}
-          <div className="text-right -mt-1">
+          <div className="flex justify-end -mt-1">
             <button
               type="button"
-              onClick={() => onForgotPassword?.()}
-              className="text-[11px] text-yellow-500/70 hover:text-yellow-400 transition-colors font-medium hover:underline"
+              onClick={(e) => {
+                e.preventDefault();
+                onForgotPassword?.();
+              }}
+              className="text-xs text-yellow-500/80 hover:text-yellow-400 transition-colors font-medium hover:underline cursor-pointer flex items-center gap-1 py-1 px-1"
             >
-              Esqueceu sua senha?
+              <span>Esqueceu sua senha?</span>
             </button>
           </div>
 

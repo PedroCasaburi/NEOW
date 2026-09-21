@@ -282,14 +282,47 @@ async function startServer() {
 
   const users: UserData[] = [
     { 
-      firstName: "Admin", 
-      lastName: "User", 
+      firstName: "Pedro", 
+      lastName: "Casaburi", 
+      username: "pedrocasaburi", 
+      cpf: "000.111.222-33", 
+      position: "Engenheiro de Sistemas / Desenvolvedor", 
+      department: "Diretoria de Tecnologia & Inovação", 
+      email: "pedrocasaburi@hotmail.com", 
+      phone: "(11) 99999-0000", 
+      password: "123456" 
+    },
+    { 
+      firstName: "Administrador", 
+      lastName: "Master", 
+      username: "adminmaster", 
+      cpf: "000.111.222-33", 
+      position: "Engenheiro Chefe de Sistemas / Dono", 
+      department: "Diretoria de Tecnologia & Inovação", 
+      email: "adminmaster@industrial.com", 
+      phone: "(11) 99999-0000", 
+      password: "123456" 
+    },
+    { 
+      firstName: "Gabriel", 
+      lastName: "Araújo", 
       username: "Gbxm", 
       cpf: "123.456.789-00", 
-      position: "Engenheiro de Seguran├ºa / Admin", 
-      department: "Centro de Opera├º├Áes Industriais (COI)", 
+      position: "Engenheiro de Segurança / Admin COI", 
+      department: "Centro de Operações Industriais (COI)", 
       email: "gbxm.seguranca@industrial.com", 
       phone: "(11) 98765-4321", 
+      password: "123456" 
+    },
+    { 
+      firstName: "Auditor", 
+      lastName: "Visualizador", 
+      username: "visualizador", 
+      cpf: "999.888.777-66", 
+      position: "Técnico de Monitoramento / Fiscal", 
+      department: "Auditoria Externa de Segurança", 
+      email: "visualizador@industrial.com", 
+      phone: "(11) 91234-5678", 
       password: "123456" 
     }
   ];

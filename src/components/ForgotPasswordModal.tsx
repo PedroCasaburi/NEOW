@@ -49,6 +49,17 @@ export default function ForgotPasswordModal({ isOpen, onClose, onSuccess }: Forg
     };
   }, [isOpen]);
 
+  // Fechar com tecla Escape
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isOpen) {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
+
   // OTP countdown timer
   useEffect(() => {
     if (step === "OTP" && countdown > 0) {
@@ -205,12 +216,20 @@ export default function ForgotPasswordModal({ isOpen, onClose, onSuccess }: Forg
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md overflow-y-auto">
+    <div 
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          onClose();
+        }
+      }}
+      className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md overflow-y-auto"
+    >
       <motion.div
         initial={{ opacity: 0, scale: 0.92, y: 20 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.92, y: 20 }}
         transition={{ duration: 0.3 }}
+        onClick={(e) => e.stopPropagation()}
         className="w-full max-w-[460px] bg-[#1a1616]/95 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl overflow-hidden"
       >
         {/* Header */}
@@ -231,7 +250,8 @@ export default function ForgotPasswordModal({ isOpen, onClose, onSuccess }: Forg
             </div>
             <button
               onClick={onClose}
-              className="text-zinc-500 hover:text-white transition-colors p-2 rounded-xl hover:bg-zinc-800"
+              className="text-zinc-500 hover:text-white transition-colors p-2 rounded-xl hover:bg-zinc-800 cursor-pointer"
+              title="Fechar (Esc)"
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
@@ -284,6 +304,34 @@ export default function ForgotPasswordModal({ isOpen, onClose, onSuccess }: Forg
                   />
                 </div>
 
+                {/* E-mails para demonstração rápida na banca */}
+                <div className="pt-1">
+                  <p className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2 text-center">
+                    Acesso Rápido para Demonstração (TCC):
+                  </p>
+                  <div className="flex flex-col gap-1.5">
+                    {[
+                      { label: "Pedro Casaburi (E-mail Real Resend)", mail: "pedrocasaburi@hotmail.com" },
+                      { label: "Admin Empresa (Gbxm)", mail: "gbxm.seguranca@industrial.com" },
+                      { label: "Admin Master (Dono)", mail: "adminmaster@industrial.com" },
+                      { label: "Visualizador / Auditor", mail: "visualizador@industrial.com" }
+                    ].map(item => (
+                      <button
+                        key={item.mail}
+                        type="button"
+                        onClick={() => {
+                          setEmail(item.mail);
+                          setError("");
+                        }}
+                        className="text-[11px] bg-zinc-900/90 hover:bg-zinc-800 text-zinc-300 hover:text-yellow-400 px-3 py-1.5 rounded-lg border border-white/5 transition-all text-left flex items-center justify-between cursor-pointer group"
+                      >
+                        <span className="font-medium text-zinc-400 group-hover:text-zinc-200">{item.label}</span>
+                        <span className="font-mono text-[10px] text-yellow-500/80 group-hover:text-yellow-400">{item.mail}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 {error && (
                   <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-red-400 text-xs font-medium text-center flex items-center justify-center gap-1.5">
                     <AlertTriangle className="w-3.5 h-3.5" /> {error}
@@ -299,7 +347,7 @@ export default function ForgotPasswordModal({ isOpen, onClose, onSuccess }: Forg
                 <button
                   onClick={handleRequestCode}
                   disabled={loading || !email}
-                  className="w-full bg-gradient-to-r from-[#f5c362] to-[#e8a845] hover:from-[#f7cd7d] hover:to-[#f0b55d] text-zinc-900 font-bold py-3.5 rounded-xl shadow-lg shadow-yellow-900/20 transition-all active:scale-[0.98] uppercase tracking-wider text-xs disabled:opacity-50 flex items-center justify-center gap-2"
+                  className="w-full bg-gradient-to-r from-[#f5c362] to-[#e8a845] hover:from-[#f7cd7d] hover:to-[#f0b55d] text-zinc-900 font-bold py-3.5 rounded-xl shadow-lg shadow-yellow-900/20 transition-all active:scale-[0.98] uppercase tracking-wider text-xs disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
                 >
                   {loading ? (
                     <><RefreshCw className="w-4 h-4 animate-spin" /> Enviando...</>

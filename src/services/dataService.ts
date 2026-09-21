@@ -29,6 +29,21 @@ export type RealtimeListener = (table: RealtimeTableType, event: RealtimeChangeT
 
 const SEED_USERS: UserRecord[] = [
   {
+    id: "USR-000",
+    firstName: "Pedro",
+    lastName: "Casaburi",
+    username: "pedrocasaburi",
+    role: "MASTER",
+    password: "123456",
+    cpf: "000.111.222-33",
+    position: "Engenheiro de Sistemas / Desenvolvedor",
+    department: "Diretoria de Tecnologia & Inovação",
+    email: "pedrocasaburi@hotmail.com",
+    phone: "(11) 99999-0000",
+    active: true,
+    companyId: "COMP-001"
+  },
+  {
     id: "USR-001",
     firstName: "Administrador",
     lastName: "Master",
@@ -1103,67 +1118,247 @@ export const dataService = {
   },
 
   // ------------------------------------------------------------
-  // RECUPERAÇÃO DE SENHA COM OTP (RESEND / OWASP)
+  // RECUPERAÇÃO DE SENHA COM OTP (RESEND / SUPABASE / OWASP)
   // ------------------------------------------------------------
   async requestPasswordReset(email: string): Promise<{ success: boolean; message: string }> {
+    const normalizedEmail = email.trim().toLowerCase();
     const apiBase = (import.meta as any).env?.VITE_API_URL || "";
+
+    // 1. Tentar despachar pelo servidor backend (com Resend)
     try {
       const res = await fetch(`${apiBase}/api/auth/forgot-password`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.trim().toLowerCase() })
+        body: JSON.stringify({ email: normalizedEmail })
       });
-      const data = await res.json();
-      if (res.ok) {
-        const log = createAuditLog("PASSWORD_RESET_REQUEST", email, undefined, "Solicitação de código OTP enviada");
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const data = await res.json();
+        if (res.ok && data.success) {
+          const log = createAuditLog("PASSWORD_RESET_REQUEST", normalizedEmail, undefined, "Solicitação de código OTP enviada via backend");
+          const logs = getFromStorage<SecurityAuditRecord[]>("ism_audit_logs", []);
+          logs.unshift(log);
+          saveToStorage("ism_audit_logs", logs.slice(0, 100));
+          return { success: true, message: data.message || "Se o e-mail estiver cadastrado, um código foi enviado." };
+        } else if (!res.ok && data.message) {
+          return { success: false, message: data.message };
+        }
+      }
+    } catch (e) {
+      console.info("[dataService] Backend local não acessível no momento. Utilizando contingência direta Supabase/Nuvem:", e);
+    }
+
+    // 2. Contingência autônoma: Supabase Cloud ou Local Storage (garante funcionamento no Vercel e na banca)
+    try {
+      let userFound = false;
+      let userName = "Operador";
+
+      if (isSupabaseConfigured() && supabase) {
+        try {
+          const { data: dbUsers, error } = await supabase
+            .from("users")
+            .select("id, username, first_name, last_name, email, active")
+            .ilike("email", normalizedEmail);
+
+          if (!error && dbUsers && dbUsers.length > 0 && dbUsers[0].active !== false) {
+            userFound = true;
+            userName = `${dbUsers[0].first_name || ""} ${dbUsers[0].last_name || ""}`.trim() || dbUsers[0].username;
+          }
+        } catch (dbErr) {
+          console.warn("[dataService] Consulta de usuário no Supabase:", dbErr);
+        }
+      }
+
+      if (!userFound) {
+        const localUsers = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
+        const u = localUsers.find(x => x.email.toLowerCase() === normalizedEmail);
+        if (u && u.active !== false) {
+          userFound = true;
+          userName = `${u.firstName} ${u.lastName}`.trim();
+        }
+      }
+
+      if (userFound) {
+        // Gerar código numérico de 6 dígitos
+        const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+        const hashedCode = await hashPassword(otpCode);
+        const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+        if (isSupabaseConfigured() && supabase) {
+          try {
+            await supabase.from("password_resets").update({ used: true }).eq("email", normalizedEmail).eq("used", false);
+            await supabase.from("password_resets").insert({
+              email: normalizedEmail,
+              code_hash: hashedCode,
+              attempts: 0,
+              expires_at: expiresAt,
+              used: false
+            });
+          } catch (e) {
+            console.warn("[dataService] Gravação no Supabase password_resets:", e);
+          }
+        }
+
+        // Armazenar localmente para contingência em modo apresentação
+        const resets = getFromStorage<any[]>("ism_password_resets", []);
+        resets.forEach(r => { if (r.email === normalizedEmail) r.used = true; });
+        resets.push({
+          email: normalizedEmail,
+          code: otpCode,
+          code_hash: hashedCode,
+          expires_at: Date.now() + 10 * 60 * 1000,
+          used: false
+        });
+        saveToStorage("ism_password_resets", resets);
+
+        const log = createAuditLog("PASSWORD_RESET_REQUEST", normalizedEmail, undefined, "Solicitação de código OTP gerada");
         const logs = getFromStorage<SecurityAuditRecord[]>("ism_audit_logs", []);
         logs.unshift(log);
         saveToStorage("ism_audit_logs", logs.slice(0, 100));
-        return { success: true, message: data.message || "Se o e-mail estiver cadastrado, um código foi enviado." };
-      } else {
-        return { success: false, message: data.message || "Erro ao solicitar código de recuperação." };
+
+        // Feedback no console do navegador para demonstração rápida caso e-mail real não esteja configurado
+        console.info(
+          `%c[INDUSTRIAL SAFETY MONITOR - DEMO OTP]%c\nE-mail: ${normalizedEmail}\nCódigo de Verificação: ${otpCode}\nValidade: 10 minutos`,
+          "background: #eab308; color: #000; font-weight: bold; padding: 2px 6px; border-radius: 4px;",
+          "color: #eab308; font-weight: bold;"
+        );
       }
-    } catch (e) {
-      console.warn("[dataService] Erro ao conectar ao servidor para forgot-password:", e);
-      return { success: false, message: "Não foi possível conectar ao servidor. Verifique sua conexão." };
+
+      // OWASP: Resposta neutra para prevenção de enumeração de contas
+      return { 
+        success: true, 
+        message: "Se o e-mail informado estiver cadastrado no sistema, um código de uso único (OTP) foi enviado." 
+      };
+    } catch (fallbackErr) {
+      console.error("[dataService] Erro ao processar solicitação de recuperação:", fallbackErr);
+      return { success: false, message: "Ocorreu um erro ao processar a solicitação. Tente novamente." };
     }
   },
 
   async resetPasswordWithOtp(email: string, code: string, newPassword: string): Promise<{ success: boolean; message: string }> {
+    const normalizedEmail = email.trim().toLowerCase();
+    const cleanCode = code.trim();
     const apiBase = (import.meta as any).env?.VITE_API_URL || "";
+
+    // 1. Tentar validar via backend
     try {
       const res = await fetch(`${apiBase}/api/auth/reset-password`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email: email.trim().toLowerCase(),
-          code: code.trim(),
+          email: normalizedEmail,
+          code: cleanCode,
           newPassword
         })
       });
-      const data = await res.json();
-      if (res.ok) {
-        const log = createAuditLog("PASSWORD_RESET", email, undefined, "Senha redefinida com sucesso via código OTP");
-        const logs = getFromStorage<SecurityAuditRecord[]>("ism_audit_logs", []);
-        logs.unshift(log);
-        saveToStorage("ism_audit_logs", logs.slice(0, 100));
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const data = await res.json();
+        if (res.ok && data.success) {
+          const log = createAuditLog("PASSWORD_RESET", normalizedEmail, undefined, "Senha redefinida com sucesso via backend OTP");
+          const logs = getFromStorage<SecurityAuditRecord[]>("ism_audit_logs", []);
+          logs.unshift(log);
+          saveToStorage("ism_audit_logs", logs.slice(0, 100));
 
-        // Atualizar no storage local se o usuário existir localmente
-        const localUsers = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
-        const idx = localUsers.findIndex(u => u.email.toLowerCase() === email.trim().toLowerCase());
-        if (idx >= 0) {
-          const hashed = await hashPassword(newPassword);
-          localUsers[idx].password = hashed;
-          saveToStorage("ism_users", localUsers);
+          // Atualizar no storage local também para consistência
+          const localUsers = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
+          const idx = localUsers.findIndex(u => u.email.toLowerCase() === normalizedEmail);
+          if (idx >= 0) {
+            localUsers[idx].password = newPassword;
+            saveToStorage("ism_users", localUsers);
+          }
+
+          return { success: true, message: data.message || "Senha redefinida com sucesso!" };
+        } else if (!res.ok && data.message) {
+          return { success: false, message: data.message };
         }
-
-        return { success: true, message: data.message || "Senha redefinida com sucesso!" };
-      } else {
-        return { success: false, message: data.message || "Código inválido ou expirado." };
       }
     } catch (e) {
-      console.warn("[dataService] Erro ao conectar ao servidor para reset-password:", e);
-      return { success: false, message: "Não foi possível conectar ao servidor para validar o código." };
+      console.info("[dataService] Backend local não acessível. Validando diretamente via Supabase/Local:", e);
+    }
+
+    // 2. Validação direta via Supabase ou Local Storage (contingência)
+    try {
+      let codeValid = false;
+
+      // Consulta Supabase
+      if (isSupabaseConfigured() && supabase) {
+        try {
+          const { data: resets, error } = await supabase
+            .from("password_resets")
+            .select("*")
+            .eq("email", normalizedEmail)
+            .eq("used", false)
+            .gt("expires_at", new Date().toISOString())
+            .order("created_at", { ascending: false })
+            .limit(1);
+
+          if (!error && resets && resets.length > 0) {
+            const expectedHash = await hashPassword(cleanCode);
+            if (resets[0].code_hash === expectedHash) {
+              codeValid = true;
+              await supabase.from("password_resets").update({ used: true }).eq("id", resets[0].id);
+            }
+          }
+        } catch (e) {
+          console.warn("[dataService] Falha na validação direta pelo Supabase:", e);
+        }
+      }
+
+      // Consulta Local Storage se ainda não validou
+      if (!codeValid) {
+        const localResets = getFromStorage<any[]>("ism_password_resets", []);
+        const now = Date.now();
+        const activeIdx = localResets.findIndex(r => 
+          r.email === normalizedEmail && 
+          !r.used && 
+          r.expires_at > now && 
+          (r.code === cleanCode || r.code_hash === cleanCode)
+        );
+
+        if (activeIdx >= 0) {
+          codeValid = true;
+          localResets[activeIdx].used = true;
+          saveToStorage("ism_password_resets", localResets);
+        }
+      }
+
+      if (!codeValid) {
+        return { success: false, message: "Código de verificação incorreto ou expirado." };
+      }
+
+      // Atualizar a senha no banco Supabase
+      if (isSupabaseConfigured() && supabase) {
+        try {
+          await supabase
+            .from("users")
+            .update({ 
+              password: newPassword,
+              last_password_change: new Date().toISOString()
+            })
+            .ilike("email", normalizedEmail);
+        } catch (dbUpErr) {
+          console.warn("[dataService] Atualização de senha no Supabase:", dbUpErr);
+        }
+      }
+
+      // Atualizar no storage local
+      const localUsers = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
+      const idx = localUsers.findIndex(u => u.email.toLowerCase() === normalizedEmail);
+      if (idx >= 0) {
+        localUsers[idx].password = newPassword;
+        saveToStorage("ism_users", localUsers);
+      }
+
+      const log = createAuditLog("PASSWORD_RESET", normalizedEmail, undefined, "Senha redefinida com sucesso");
+      const logs = getFromStorage<SecurityAuditRecord[]>("ism_audit_logs", []);
+      logs.unshift(log);
+      saveToStorage("ism_audit_logs", logs.slice(0, 100));
+
+      return { success: true, message: "Senha redefinida com sucesso! Você já pode entrar com sua nova senha." };
+    } catch (err) {
+      console.error("[dataService] Erro ao validar código OTP:", err);
+      return { success: false, message: "Erro ao processar a validação da senha." };
     }
   }
 };
