@@ -273,7 +273,7 @@ export default function App() {
     }
   };
 
-  const handleRegister = async (userData: any) => {
+  const handleRegister = async (userData: any): Promise<{ success: boolean; message?: string }> => {
     try {
       const res = await dataService.saveUser({
         firstName: userData.firstName,
@@ -287,19 +287,18 @@ export default function App() {
         email: userData.email,
         phone: userData.phone,
         active: true
-      });
+      }, "register");
+
       if (res.success) {
         setAuthView("LOGIN");
         setLoginError("");
         setLoginSuccessMessage("Cadastro realizado com sucesso no Supabase! Você já pode entrar.");
-        return true;
+        return { success: true };
       } else {
-        setLoginError(res.message || "Erro ao cadastrar usuário no Supabase.");
-        return false;
+        return { success: false, message: res.message || "Erro ao cadastrar usuário no Supabase." };
       }
     } catch (err: any) {
-      setLoginError(err?.message || "Erro ao cadastrar usuário.");
-      return false;
+      return { success: false, message: err?.message || "Erro ao cadastrar usuário." };
     }
   };
 

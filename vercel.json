@@ -2,6 +2,11 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "framework": "vite",
+  "functions": {
+    "api/**/*.ts": {
+      "runtime": "@vercel/node"
+    }
+  },
   "headers": [
     {
       "source": "/(.*)",
@@ -23,7 +28,15 @@
   ],
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/api/auth/forgot-password",
+      "destination": "/api/auth/forgot-password"
+    },
+    {
+      "source": "/api/auth/reset-password",
+      "destination": "/api/auth/reset-password"
+    },
+    {
+      "source": "/((?!api/).*)",
       "destination": "/index.html"
     }
   ]

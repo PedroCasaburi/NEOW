@@ -823,6 +823,7 @@ export const dataService = {
             lastName: u.last_name,
             username: u.username,
             role: u.role as UserRole,
+            password: u.password,
             cpf: u.cpf || "",
             position: u.position || "",
             department: u.department || "",
@@ -989,6 +990,11 @@ export const dataService = {
     const existingIndex = localUsers.findIndex(u => (user.id && u.id === user.id) || u.username === user.username);
     let savedRecord: UserRecord;
 
+    // Validação de unicidade para novo cadastro público
+    if (actor === "register" && existingIndex >= 0) {
+      return { success: false, message: "Este nome de usuário já está em uso localmente. Por favor, escolha outro." };
+    }
+
     if (existingIndex >= 0) {
       savedRecord = { 
         ...localUsers[existingIndex], 
@@ -1035,6 +1041,11 @@ export const dataService = {
           return { success: false, message: `Erro ao consultar Supabase: ${checkErr.message}` };
         }
 
+        // Em fluxo de cadastro novo, rejeitar se o username já existir no Supabase
+        if (dbExisting && actor === "register") {
+          return { success: false, message: "Este nome de usuário já está em uso no Supabase. Por favor, escolha outro." };
+        }
+
         if (dbExisting) {
           // Atualização de usuário existente: enviamos apenas campos alterados/válidos
           const updatePayload: any = {
@@ -1064,7 +1075,7 @@ export const dataService = {
             return { success: false, message: `Erro ao atualizar usuário no Supabase: ${updateErr.message}` };
           }
         } else {
-          // Inserção de novo usuário
+          // Inserção de novo usuário no Supabase
           const insertPayload: any = {
             id: savedRecord.id,
             username: savedRecord.username,
@@ -1087,7 +1098,10 @@ export const dataService = {
 
           if (insertErr) {
             console.error("[dataService] Falha ao criar usuário no Supabase:", insertErr);
-            return { success: false, message: `Erro ao cadastrar usuário no Supabase: ${insertErr.message}` };
+            const msg = insertErr.message?.includes("duplicate")
+              ? "Nome de usuário já cadastrado no banco."
+              : `Erro ao cadastrar usuário no Supabase: ${insertErr.message}`;
+            return { success: false, message: msg };
           }
         }
       } catch (err: any) {
@@ -1614,6 +1628,16 @@ export const dataService = {
       if (contentType.includes("application/json")) {
         const data = await res.json();
         if (res.ok && data.success) {
+          if (data.demoOtp) {
+            const resets = getFromStorage<any[]>("ism_password_resets", []);
+            resets.push({
+              email: normalizedEmail,
+              code: data.demoOtp,
+              expires_at: Date.now() + 10 * 60 * 1000,
+              used: false
+            });
+            saveToStorage("ism_password_resets", resets);
+          }
           const log = createAuditLog("PASSWORD_RESET_REQUEST", normalizedEmail, undefined, "Solicitação de código OTP enviada via backend");
           const logs = getFromStorage<SecurityAuditRecord[]>("ism_audit_logs", []);
           logs.unshift(log);
@@ -1740,10 +1764,11 @@ export const dataService = {
           saveToStorage("ism_audit_logs", logs.slice(0, 100));
 
           // Atualizar no storage local também para consistência
+          const securePassword = await hashPassword(newPassword);
           const localUsers = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
           const idx = localUsers.findIndex(u => u.email.toLowerCase() === normalizedEmail);
           if (idx >= 0) {
-            localUsers[idx].password = newPassword;
+            localUsers[idx].password = securePassword;
             saveToStorage("ism_users", localUsers);
           }
 
@@ -1773,8 +1798,18 @@ export const dataService = {
             .limit(1);
 
           if (!error && resets && resets.length > 0) {
-            const expectedHash = await hashPassword(cleanCode);
-            if (resets[0].code_hash === expectedHash) {
+            const expectedHash1 = await hashPassword(cleanCode);
+            let expectedHash2 = "";
+            try {
+              const encoder = new TextEncoder();
+              const salt = "ISM_SAFETY_SALT_2026_SECURE_#";
+              const saltData = encoder.encode(`${salt}:${normalizedEmail}:${cleanCode}:${salt}`);
+              const hashBuffer = await crypto.subtle.digest("SHA-256", saltData);
+              const bytes = new Uint8Array(hashBuffer);
+              expectedHash2 = Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+            } catch {}
+
+            if (resets[0].code_hash === expectedHash1 || resets[0].code_hash === expectedHash2) {
               codeValid = true;
               await supabase.from("password_resets").update({ used: true }).eq("id", resets[0].id);
             }
@@ -1806,13 +1841,15 @@ export const dataService = {
         return { success: false, message: "Código de verificação incorreto ou expirado." };
       }
 
+      const securePassword = await hashPassword(newPassword);
+
       // Atualizar a senha no banco Supabase
       if (isSupabaseConfigured() && supabase) {
         try {
           await supabase
             .from("users")
             .update({ 
-              password: newPassword,
+              password: securePassword,
               last_password_change: new Date().toISOString()
             })
             .ilike("email", normalizedEmail);
@@ -1825,7 +1862,7 @@ export const dataService = {
       const localUsers = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
       const idx = localUsers.findIndex(u => u.email.toLowerCase() === normalizedEmail);
       if (idx >= 0) {
-        localUsers[idx].password = newPassword;
+        localUsers[idx].password = securePassword;
         saveToStorage("ism_users", localUsers);
       }
 

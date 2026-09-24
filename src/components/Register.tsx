@@ -4,7 +4,7 @@ import { motion } from "motion/react";
 import { formatCPF, formatPhone, isValidCPF, isValidPhone, isValidEmail } from "../utils/formatters";
 
 interface RegisterProps {
-  onRegister: (data: any) => Promise<boolean>;
+  onRegister: (data: any) => Promise<{ success: boolean; message?: string }>;
   onGoBack: () => void;
 }
 
@@ -46,12 +46,12 @@ export default function Register({ onRegister, onGoBack }: RegisterProps) {
 
     setIsSubmitting(true);
     try {
-      const success = await onRegister(formData);
-      if (!success) {
-        setError("Erro ao cadastrar. Tente outro nome de usuário.");
+      const res = await onRegister(formData);
+      if (!res.success) {
+        setError(res.message || "Erro ao cadastrar. Tente outro nome de usuário.");
       }
-    } catch (err) {
-      setError("Erro de conexão com o servidor.");
+    } catch (err: any) {
+      setError(err?.message || "Erro de conexão com o servidor.");
     } finally {
       setIsSubmitting(false);
     }

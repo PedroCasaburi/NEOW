@@ -32,3 +32,6 @@ pnpm-debug.log*
 *.sw?
 .DS_Store
 Thumbs.db
+
+# MCPs com tokens reais (NUNCA subir para o GitHub!)
+.agents/mcp_config.json
