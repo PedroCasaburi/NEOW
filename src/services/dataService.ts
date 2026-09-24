@@ -248,6 +248,23 @@ const SEED_EMPLOYEES: Employee[] = [
     battery: 90,
     assignedHelmetId: null,
     assignedHelmetSerial: null
+  },
+  {
+    id: "EMP005",
+    name: "Augusto Melo",
+    cpf: "567.890.123-44",
+    matricula: "IND-1048",
+    roleFunction: "Técnico de Segurança do Trabalho",
+    department: "Segurança e Higiene Ocupacional",
+    shift: "1º Turno (06h - 14h)",
+    emergencyContact: "(11) 94444-5555 (Pai - Renato)",
+    status: "OFFLINE",
+    lat: -23.5545,
+    lng: -46.6373,
+    lastSeen: 0,
+    battery: 100,
+    assignedHelmetId: null,
+    assignedHelmetSerial: null
   }
 ];
 

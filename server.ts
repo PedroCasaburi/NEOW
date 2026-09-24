@@ -183,12 +183,13 @@ function getLocalIpAddresses() {
 
 import { Employee, EmployeeTelemetry, SystemStats, RecentActivity } from "./src/types";
 
-// EMP001 ├® o ESP32 real conectado. Os demais representam capacetes cadastrados no sistema atualmente desligados (OFFLINE)
+// EMP001 é o ESP32 real conectado. Os demais representam capacetes cadastrados no sistema atualmente desligados (OFFLINE)
 let employees: Employee[] = [
-  { id: "EMP001", name: "Gabriel Ara├║jo", lat: -23.5505, lng: -46.6333, status: "ONLINE", lastSeen: Date.now(), battery: 95 },
+  { id: "EMP001", name: "Gabriel Araújo", lat: -23.5505, lng: -46.6333, status: "ONLINE", lastSeen: Date.now(), battery: 95 },
   { id: "EMP002", name: "Gustavo Felix", lat: -23.5515, lng: -46.6343, status: "OFFLINE", lastSeen: 0, battery: 0 },
   { id: "EMP003", name: "Fabio Akira", lat: -23.5525, lng: -46.6353, status: "OFFLINE", lastSeen: 0, battery: 0 },
   { id: "EMP004", name: "Fabio Pelissari", lat: -23.5535, lng: -46.6363, status: "OFFLINE", lastSeen: 0, battery: 0 },
+  { id: "EMP005", name: "Augusto Melo", lat: -23.5545, lng: -46.6373, status: "OFFLINE", lastSeen: 0, battery: 0 },
 ];
 
 let latestESP32Data: any = null;
@@ -334,7 +335,7 @@ async function startServer() {
       const { password: _, ...safeUser } = user;
       res.json({ success: true, user: safeUser });
     } else {
-      res.status(401).json({ success: false, message: "Usu├írio ou senha incorretos." });
+      res.status(401).json({ success: false, message: "Usuário ou senha incorretos." });
     }
   });
 
@@ -346,7 +347,7 @@ async function startServer() {
       const { password: _, ...safeUser } = users[userIndex];
       res.json({ success: true, user: safeUser });
     } else {
-      res.status(404).json({ success: false, message: "Usu├írio n├úo encontrado." });
+      res.status(404).json({ success: false, message: "Usuário não encontrado." });
     }
   });
 

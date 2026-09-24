@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "COLE_SEU_GITHUB_PAT_AQUI"
+      },
+      "description": "Acesso ao repositório GitHub PedroCasaburi/NEOW — commits, issues, pull requests, branches"
+    },
+    "supabase": {
+      "command": "npx",
+      "args": ["-y", "@supabase/mcp-server-supabase@latest", "--access-token", "COLE_SEU_SUPABASE_ACCESS_TOKEN_AQUI"],
+      "description": "Acesso direto ao Supabase — consultas SQL, tabelas, RLS, realtime, storage"
+    }
+  }
+}
