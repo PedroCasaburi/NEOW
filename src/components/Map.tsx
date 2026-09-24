@@ -1,6 +1,6 @@
 import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
-import { Employee } from "../types";
+import { Employee, UserRole } from "../types";
 import { useEffect } from "react";
 import { Activity, Radio, AlertTriangle, ShieldCheck, Wifi, MapPin } from "lucide-react";
 
@@ -47,9 +47,10 @@ interface MapProps {
   selectedEmployeeId: string | null;
   onSelectEmployee: (id: string) => void;
   userLocation: [number, number] | null;
+  userRole?: UserRole;
 }
 
-export default function Map({ employees, selectedEmployeeId, onSelectEmployee, userLocation }: MapProps) {
+export default function Map({ employees, selectedEmployeeId, onSelectEmployee, userLocation, userRole }: MapProps) {
   // Mostra no mapa EXCLUSIVAMENTE capacetes conectados
   const connectedEmployees = employees.filter(e => e.status !== "OFFLINE");
   const selectedEmployee = connectedEmployees.find(e => e.id === selectedEmployeeId) || connectedEmployees[0] || null;
@@ -146,8 +147,8 @@ export default function Map({ employees, selectedEmployeeId, onSelectEmployee, u
                       </span>
                     </div>
                     <div className="flex justify-between text-[10px] text-zinc-500 pt-1 border-t">
-                      <span>IP ESP32:</span>
-                      <span className="font-mono">{emp.telemetry.ip || "192.168.0.122"}</span>
+                      <span>{userRole === "MASTER" ? "IP ESP32:" : "Conexão IoT:"}</span>
+                      <span className="font-mono">{userRole === "MASTER" ? (emp.telemetry.ip || "192.168.0.122") : "Rede Protegida"}</span>
                     </div>
                   </div>
                 ) : (
@@ -209,23 +210,29 @@ export default function Map({ employees, selectedEmployeeId, onSelectEmployee, u
               {/* Sensor Status */}
               <div className="bg-zinc-950/70 p-2.5 rounded-xl border border-white/5 space-y-1.5 text-xs">
                 <div className="flex justify-between items-center">
-                  <span className="text-zinc-400 text-[10px] uppercase font-semibold">Sensor Vibração (SW-420):</span>
+                  <span className="text-zinc-400 text-[10px] uppercase font-semibold">
+                    {userRole === "MASTER" ? "Sensor Vibração (SW-420):" : "Sensor de Vibração:"}
+                  </span>
                   <span className={`text-[10px] font-bold ${selectedEmployee.telemetry.vibracao ? "text-yellow-400" : "text-zinc-400"}`}>
                     {selectedEmployee.telemetry.vibracao ? "Vibração Ativa" : "Estável"}
                   </span>
                 </div>
                 <div className="flex justify-between items-center">
-                  <span className="text-zinc-400 text-[10px] uppercase font-semibold">Sensor de Som (FC-04):</span>
+                  <span className="text-zinc-400 text-[10px] uppercase font-semibold">
+                    {userRole === "MASTER" ? "Sensor de Som (FC-04):" : "Sensor Acústico:"}
+                  </span>
                   <span className={`text-[10px] font-bold ${selectedEmployee.telemetry.som ? "text-blue-400" : "text-zinc-400"}`}>
                     {selectedEmployee.telemetry.som ? "Som Detectado" : "Normal"}
                   </span>
                 </div>
-                <div className="flex justify-between items-center pt-1 border-t border-white/5">
-                  <span className="text-zinc-400 text-[10px] uppercase font-semibold">Wi-Fi / IP Local:</span>
-                  <span className="text-[10px] font-mono text-zinc-300">
-                    {selectedEmployee.telemetry.ip || "192.168.0.122"}
-                  </span>
-                </div>
+                {userRole === "MASTER" && (
+                  <div className="flex justify-between items-center pt-1 border-t border-white/5">
+                    <span className="text-zinc-400 text-[10px] uppercase font-semibold">Wi-Fi / IP Local:</span>
+                    <span className="text-[10px] font-mono text-zinc-300">
+                      {selectedEmployee.telemetry.ip || "192.168.0.122"}
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* GPS Coordinates */}

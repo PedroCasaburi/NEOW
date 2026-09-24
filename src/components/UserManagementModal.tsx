@@ -15,7 +15,15 @@ import {
   Mail,
   Phone,
   AlertCircle,
-  Trash2
+  Trash2,
+  Settings,
+  HelpCircle,
+  ExternalLink,
+  Globe,
+  Save,
+  Loader2,
+  Sparkles,
+  Users
 } from "lucide-react";
 import { UserRecord, UserRole } from "../types";
 import { dataService } from "../services/dataService";
@@ -28,14 +36,17 @@ interface UserModalProps {
   onClose: () => void;
   currentUserRole: UserRole;
   currentUsername: string;
+  initialTab?: "users" | "settings";
 }
 
 export default function UserManagementModal({
   isOpen,
   onClose,
   currentUserRole,
-  currentUsername
+  currentUsername,
+  initialTab = "users"
 }: UserModalProps) {
+  const [activeTab, setActiveTab] = useState<"users" | "settings">(initialTab);
   const [users, setUsers] = useState<UserRecord[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [filterRole, setFilterRole] = useState("ALL");
@@ -44,16 +55,26 @@ export default function UserManagementModal({
   const [successMsg, setSuccessMsg] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
 
+  // Configurações do Sistema (Admin Master)
+  const [faqUrl, setFaqUrl] = useState("");
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [settingsSuccessMsg, setSettingsSuccessMsg] = useState("");
+  const [settingsErrorMsg, setSettingsErrorMsg] = useState("");
+
   const isMaster = currentUserRole === "MASTER";
   const isCompanyAdmin = currentUserRole === "COMPANY_ADMIN";
 
   useEffect(() => {
     if (isOpen) {
       loadUsers();
+      loadSettings();
       // Sincronização em tempo real: reflete alterações na raiz do Supabase
-      const unsubscribe = dataService.subscribeToRealtime((table) => {
+      const unsubscribe = dataService.subscribeToRealtime((table, _event, record) => {
         if (table === "users") {
           loadUsers();
+        }
+        if (table === "app_settings" && record?.key === "faq_forms_url") {
+          setFaqUrl(record.value || "");
         }
       });
       return () => unsubscribe();
@@ -65,12 +86,45 @@ export default function UserManagementModal({
     setUsers(data);
   };
 
+  const loadSettings = async () => {
+    const url = await dataService.getAppSetting("faq_forms_url");
+    setFaqUrl(url || "");
+  };
+
+  const handleSaveFaqUrl = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setSettingsErrorMsg("");
+    setSettingsSuccessMsg("");
+    setIsSavingSettings(true);
+
+    try {
+      const trimmed = faqUrl.trim();
+      if (trimmed && !trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+        setSettingsErrorMsg("A URL deve ser válida e iniciar com http:// ou https://");
+        setIsSavingSettings(false);
+        return;
+      }
+
+      await dataService.setAppSetting("faq_forms_url", trimmed, currentUsername);
+      setSettingsSuccessMsg("URL do formulário de FAQ salva com sucesso! Sincronizada em tempo real com todos os operadores.");
+      setTimeout(() => setSettingsSuccessMsg(""), 4000);
+    } catch (err) {
+      setSettingsErrorMsg("Erro ao salvar configuração do sistema.");
+    } finally {
+      setIsSavingSettings(false);
+    }
+  };
+
   const handleToggleStatus = async (username: string) => {
     if (username === currentUsername) {
       alert("Você não pode desativar o seu próprio usuário logado.");
       return;
     }
-    await dataService.toggleUserStatus(username, currentUsername);
+    const res = await dataService.toggleUserStatus(username, currentUsername);
+    if (!res.success) {
+      alert(res.message || "Erro ao alterar status do usuário no Supabase.");
+      return;
+    }
     await loadUsers();
   };
 
@@ -80,8 +134,12 @@ export default function UserManagementModal({
       return;
     }
     if (window.confirm(`Confirma a exclusão definitiva do usuário @${userToDelete}? Esta ação é irreversível e será auditada.`)) {
-      await dataService.deleteUser(userToDelete, currentUsername);
-      setSuccessMsg(`Usuário @${userToDelete} excluído com sucesso.`);
+      const res = await dataService.deleteUser(userToDelete, currentUsername);
+      if (!res.success) {
+        alert(res.message || "Erro ao excluir usuário no Supabase.");
+        return;
+      }
+      setSuccessMsg(res.message || `Usuário @${userToDelete} excluído com sucesso do Supabase.`);
       setTimeout(() => setSuccessMsg(""), 3000);
       await loadUsers();
     }
@@ -124,8 +182,13 @@ export default function UserManagementModal({
       return;
     }
 
-    await dataService.saveUser(editingUser, currentUsername);
-    setSuccessMsg("Usuário salvo com sucesso e credenciais protegidas!");
+    const res = await dataService.saveUser(editingUser, currentUsername);
+    if (!res.success) {
+      setErrorMsg(res.message || "Erro ao salvar usuário no banco Supabase.");
+      return;
+    }
+
+    setSuccessMsg(res.message || "Usuário salvo com sucesso e credenciais protegidas!");
     setTimeout(() => setSuccessMsg(""), 3000);
     setIsFormOpen(false);
     setEditingUser(null);
@@ -223,8 +286,40 @@ export default function UserManagementModal({
           </button>
         </div>
 
-        {/* Action Bar */}
-        <div className="p-6 border-b border-white/5 bg-zinc-900/50 flex flex-col md:flex-row gap-4 items-center justify-between">
+        {/* Abas de Navegação (Exclusivo Admin Master) */}
+        {isMaster && (
+          <div className="flex border-b border-white/10 bg-zinc-950/40 px-6 gap-2 pt-2">
+            <button
+              onClick={() => setActiveTab("users")}
+              className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all ${
+                activeTab === "users"
+                  ? "border-yellow-500 text-yellow-500 bg-yellow-500/10 rounded-t-lg"
+                  : "border-transparent text-zinc-400 hover:text-white"
+              }`}
+            >
+              <Users className="w-4 h-4" />
+              <span>Gestão de Usuários (RBAC)</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab("settings")}
+              className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all ${
+                activeTab === "settings"
+                  ? "border-yellow-500 text-yellow-500 bg-yellow-500/10 rounded-t-lg"
+                  : "border-transparent text-zinc-400 hover:text-white"
+              }`}
+            >
+              <Settings className="w-4 h-4" />
+              <span>Configurações do Sistema</span>
+            </button>
+          </div>
+        )}
+
+        {/* Conteúdo da Aba 1: Usuários */}
+        {activeTab === "users" && (
+          <>
+            {/* Action Bar */}
+            <div className="p-6 border-b border-white/5 bg-zinc-900/50 flex flex-col md:flex-row gap-4 items-center justify-between">
           <div className="flex items-center gap-3 w-full md:w-auto">
             <div className="relative flex-1 md:w-72">
               <Search className="w-4 h-4 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -380,6 +475,121 @@ export default function UserManagementModal({
             </tbody>
           </table>
         </div>
+          </>
+        )}
+
+        {/* Conteúdo da Aba 2: Configurações do Sistema (Exclusiva Admin Master) */}
+        {activeTab === "settings" && isMaster && (
+          <div className="p-6 space-y-6">
+            <div className="bg-zinc-950/60 border border-white/10 rounded-2xl p-6">
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-xl bg-yellow-500/10 border border-yellow-500/30 flex items-center justify-center">
+                    <HelpCircle className="w-6 h-6 text-yellow-500" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-white flex items-center gap-2">
+                      Central de Ajuda / FAQ (Google Forms)
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-yellow-500/10 text-yellow-400 border border-yellow-500/30">
+                        Admin Master
+                      </span>
+                    </h3>
+                    <p className="text-xs text-zinc-400 mt-0.5">
+                      Configure a URL do Google Forms que será vinculada ao botão "Ajuda/FAQ" no rodapé de todos os usuários.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {settingsSuccessMsg && (
+                <div className="mb-4 p-3 rounded-xl bg-green-500/10 border border-green-500/30 text-green-400 text-xs flex items-center gap-2">
+                  <CheckCircle className="w-4 h-4 shrink-0" />
+                  <span>{settingsSuccessMsg}</span>
+                </div>
+              )}
+
+              {settingsErrorMsg && (
+                <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{settingsErrorMsg}</span>
+                </div>
+              )}
+
+              <form onSubmit={handleSaveFaqUrl} className="space-y-4">
+                <div>
+                  <label className="block text-zinc-300 mb-2 font-semibold uppercase tracking-wider text-xs">
+                    URL do Formulário Externo (Google Forms)
+                  </label>
+                  <div className="relative">
+                    <Globe className="w-4 h-4 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="url"
+                      value={faqUrl}
+                      onChange={(e) => setFaqUrl(e.target.value)}
+                      placeholder="https://docs.google.com/forms/d/e/.../viewform ou https://forms.gle/..."
+                      className="w-full pl-9 pr-4 py-2.5 bg-zinc-900 border border-white/10 rounded-xl text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-yellow-500 font-mono"
+                    />
+                  </div>
+                  <p className="text-[11px] text-zinc-500 mt-1.5">
+                    Insira o link público do formulário para que operadores e fiscais possam enviar dúvidas, solicitações ou relatórios.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3 pt-2">
+                  <button
+                    type="submit"
+                    disabled={isSavingSettings}
+                    className="px-5 py-2.5 bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black text-xs font-bold uppercase tracking-wider rounded-xl flex items-center gap-2 shadow-lg transition-all"
+                  >
+                    {isSavingSettings ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Salvando...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Save className="w-4 h-4" />
+                        <span>Salvar URL</span>
+                      </>
+                    )}
+                  </button>
+
+                  {faqUrl && (
+                    <button
+                      type="button"
+                      onClick={() => window.open(faqUrl, "_blank", "noopener,noreferrer")}
+                      className="px-4 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-bold uppercase tracking-wider rounded-xl flex items-center gap-2 border border-white/10 transition-colors"
+                    >
+                      <ExternalLink className="w-4 h-4 text-yellow-500" />
+                      <span>Testar Formulário</span>
+                    </button>
+                  )}
+                </div>
+              </form>
+
+              <div className="mt-6 pt-6 border-t border-white/5 grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="p-3.5 rounded-xl bg-zinc-900/60 border border-white/5">
+                  <h4 className="text-xs font-bold text-yellow-500 flex items-center gap-1.5 mb-1">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    Propagação Bidirecional em Tempo Real
+                  </h4>
+                  <p className="text-[11px] text-zinc-400 leading-relaxed">
+                    Assim que salva, a URL é publicada via Supabase Realtime WebSocket para todas as sessões abertas no navegador, atualizando o link sem recarregar a página.
+                  </p>
+                </div>
+                <div className="p-3.5 rounded-xl bg-zinc-900/60 border border-white/5">
+                  <h4 className="text-xs font-bold text-zinc-300 flex items-center gap-1.5 mb-1">
+                    <Shield className="w-3.5 h-3.5 text-green-400" />
+                    Armazenamento Híbrido Resiliente
+                  </h4>
+                  <p className="text-[11px] text-zinc-400 leading-relaxed">
+                    A configuração é persistida na tabela <code className="text-yellow-400 font-mono">app_settings</code> do PostgreSQL, com espelhamento na API REST Node.js e no LocalStorage.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Modal de Criação / Edição de Usuário */}
         <AnimatePresence>

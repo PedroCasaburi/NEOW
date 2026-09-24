@@ -74,9 +74,14 @@ export default function HelmetManagementModal({
       return;
     }
 
-    await dataService.saveHelmet(editingHelmet);
-    setSaveSuccessMsg("Capacete salvo com sucesso!");
-    setTimeout(() => setSaveSuccessMsg(""), 3000);
+    const res = await dataService.saveHelmet(editingHelmet);
+    if (!res.success) {
+      setFormError(res.message || "Erro ao salvar capacete no banco de dados Supabase.");
+      return;
+    }
+
+    setSaveSuccessMsg(res.message || "Capacete salvo e sincronizado com o Supabase com sucesso!");
+    setTimeout(() => setSaveSuccessMsg(""), 3500);
     setIsFormOpen(false);
     setEditingHelmet(null);
     await loadHelmets();
@@ -86,7 +91,11 @@ export default function HelmetManagementModal({
   const handleDeleteHelmet = async (id: string) => {
     if (isReadOnly) return;
     if (window.confirm("Deseja realmente remover este capacete do almoxarifado?")) {
-      await dataService.deleteHelmet(id);
+      const res = await dataService.deleteHelmet(id);
+      if (!res.success) {
+        alert(res.message || "Erro ao remover capacete no Supabase.");
+        return;
+      }
       await loadHelmets();
       if (onRefreshData) onRefreshData();
     }

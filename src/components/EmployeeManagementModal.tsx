@@ -77,9 +77,14 @@ export default function EmployeeManagementModal({
       return;
     }
 
-    await dataService.saveEmployee(editingEmployee);
-    setSuccessMsg("Operador atualizado com sucesso!");
-    setTimeout(() => setSuccessMsg(""), 3000);
+    const res = await dataService.saveEmployee(editingEmployee);
+    if (!res.success) {
+      setFormError(res.message || "Erro ao salvar funcionário no banco Supabase.");
+      return;
+    }
+
+    setSuccessMsg(res.message || "Operador atualizado com sucesso no Supabase!");
+    setTimeout(() => setSuccessMsg(""), 3500);
     setIsFormOpen(false);
     setEditingEmployee(null);
     await loadData();
@@ -89,7 +94,11 @@ export default function EmployeeManagementModal({
   const handleDeleteEmployee = async (id: string) => {
     if (isReadOnly) return;
     if (window.confirm("Confirma a exclusão deste funcionário do sistema?")) {
-      await dataService.deleteEmployee(id);
+      const res = await dataService.deleteEmployee(id);
+      if (!res.success) {
+        alert(res.message || "Erro ao excluir funcionário no Supabase.");
+        return;
+      }
       await loadData();
       if (onRefreshData) onRefreshData();
     }

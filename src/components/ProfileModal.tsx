@@ -11,7 +11,8 @@ import {
   X, 
   Edit3, 
   Check, 
-  Calendar
+  Calendar,
+  AlertTriangle
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -19,13 +20,15 @@ interface ProfileModalProps {
   isOpen: boolean;
   onClose: () => void;
   user: UserProfile;
-  onUpdateUser: (updated: UserProfile) => Promise<boolean>;
+  onUpdateUser: (updated: UserProfile) => Promise<boolean | { success: boolean; message?: string }>;
 }
 
 export default function ProfileModal({ isOpen, onClose, user, onUpdateUser }: ProfileModalProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [formData, setFormData] = useState<UserProfile>(user);
   const [saving, setSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [successMsg, setSuccessMsg] = useState("");
 
   React.useEffect(() => {
     setFormData(user);
@@ -35,11 +38,20 @@ export default function ProfileModal({ isOpen, onClose, user, onUpdateUser }: Pr
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErrorMsg("");
+    setSuccessMsg("");
     setSaving(true);
-    const success = await onUpdateUser(formData);
+    const res = await onUpdateUser(formData);
     setSaving(false);
-    if (success) {
-      setIsEditing(false);
+    if (res === true || (typeof res === "object" && res.success)) {
+      setSuccessMsg(typeof res === "object" && res.message ? res.message : "Perfil atualizado e sincronizado no Supabase com sucesso!");
+      setTimeout(() => {
+        setSuccessMsg("");
+        setIsEditing(false);
+      }, 1500);
+    } else {
+      const err = typeof res === "object" && res.message ? res.message : "Erro ao atualizar dados no banco Supabase.";
+      setErrorMsg(err);
     }
   };
 
@@ -63,8 +75,12 @@ export default function ProfileModal({ isOpen, onClose, user, onUpdateUser }: Pr
                   <h2 className="text-xl font-bold tracking-tight text-white">
                     {user.firstName} {user.lastName}
                   </h2>
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">
-                    Admin
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest border ${
+                    user.role === "MASTER" ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30" :
+                    user.role === "COMPANY_ADMIN" ? "bg-blue-500/20 text-blue-400 border-blue-500/30" :
+                    "bg-zinc-800 text-zinc-400 border-zinc-700"
+                  }`}>
+                    {user.role === "MASTER" ? "Admin Master" : user.role === "COMPANY_ADMIN" ? "Admin Empresa" : "Visualizador"}
                   </span>
                 </div>
                 <p className="text-xs text-zinc-400 font-mono mt-0.5">@{user.username}</p>
@@ -94,6 +110,19 @@ export default function ProfileModal({ isOpen, onClose, user, onUpdateUser }: Pr
 
           {/* Body */}
           <div className="p-6 max-h-[75vh] overflow-y-auto">
+            {errorMsg && (
+              <div className="p-3 mb-4 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-red-500" />
+                <span>{errorMsg}</span>
+              </div>
+            )}
+            {successMsg && (
+              <div className="p-3 mb-4 rounded-xl bg-green-500/10 border border-green-500/30 text-green-400 text-xs flex items-center gap-2">
+                <Check className="w-4 h-4 shrink-0 text-green-500" />
+                <span>{successMsg}</span>
+              </div>
+            )}
+
             {isEditing ? (
               <form onSubmit={handleSave} className="space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

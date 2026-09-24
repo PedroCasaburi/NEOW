@@ -55,6 +55,7 @@ export interface Employee {
   emergencyContact?: string;
   assignedHelmetId?: string | null;
   assignedHelmetSerial?: string | null;
+  companyId?: string;
   telemetry?: EmployeeTelemetry;
 }
 
@@ -138,4 +139,14 @@ export interface WebSocketMessage {
   activities?: RecentActivity[];
   accidents?: AccidentEvent[];
   users?: UserRecord[];
+}
+
+export interface AppSetting {
+  id?: string;
+  key: string;
+  value: string;
+  description?: string;
+  updatedBy?: string;
+  updatedAt?: string;
+  createdAt?: string;
 }

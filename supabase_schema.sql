@@ -305,6 +305,44 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- ============================================================
+-- 10. TABELA DE CONFIGURAÇÕES DA APLICAÇÃO (Admin Master)
+-- ============================================================
+-- Usada para armazenar URL do Google Forms FAQ, e outras configurações globais
+CREATE TABLE IF NOT EXISTS app_settings (
+    id TEXT PRIMARY KEY DEFAULT ('SET-' || substr(md5(random()::text), 1, 8)),
+    key TEXT UNIQUE NOT NULL,
+    value TEXT,
+    description TEXT,
+    updated_by TEXT,             -- username do admin que atualizou
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Habilitar RLS e política pública (leitura livre, escrita apenas via service)
+ALTER TABLE app_settings ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow public access to app_settings" ON app_settings FOR ALL USING (true) WITH CHECK (true);
+
+-- Adicionar à publicação Realtime para comunicação bidirecional
+DO $$
+BEGIN
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE app_settings;
+  EXCEPTION
+    WHEN duplicate_object THEN NULL;
+  END;
+END $$;
+
+ALTER TABLE app_settings REPLICA IDENTITY FULL;
+
+-- Índice para busca rápida por chave
+CREATE INDEX IF NOT EXISTS idx_app_settings_key ON app_settings (key);
+
+-- Seed: URL padrão vazia para o Google Forms (Admin Master vai preencher pelo painel)
+INSERT INTO app_settings (key, value, description)
+VALUES ('faq_forms_url', '', 'URL do Google Forms para solicitações e FAQ dos usuários. Configurável pelo Admin Master.')
+ON CONFLICT (key) DO NOTHING;
+
 -- Mensagem de confirmação
-SELECT 'Schema do Industrial Safety Monitor com Realtime Bidirecional, OTP Seguro e Cibersegurança configurados com sucesso!' AS status;
+SELECT 'Schema do Industrial Safety Monitor com Realtime Bidirecional, OTP Seguro, Cibersegurança e Configurações Globais configurados com sucesso!' AS status;
 

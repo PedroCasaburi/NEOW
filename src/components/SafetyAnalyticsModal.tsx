@@ -15,7 +15,7 @@ import {
   Volume2,
   Cpu
 } from "lucide-react";
-import { SafetyGuideline, AccidentEvent, Employee } from "../types";
+import { SafetyGuideline, AccidentEvent, Employee, UserRole } from "../types";
 import { dataService } from "../services/dataService";
 import { motion } from "motion/react";
 
@@ -23,12 +23,14 @@ interface SafetyAnalyticsProps {
   isOpen: boolean;
   onClose: () => void;
   employees: Employee[];
+  userRole?: UserRole;
 }
 
 export default function SafetyAnalyticsModal({
   isOpen,
   onClose,
-  employees
+  employees,
+  userRole
 }: SafetyAnalyticsProps) {
   const [guidelines, setGuidelines] = useState<SafetyGuideline[]>([]);
   const [accidents, setAccidents] = useState<AccidentEvent[]>([]);
@@ -58,7 +60,9 @@ export default function SafetyAnalyticsModal({
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `Laudo_Tecnico_Seguranca_Industrial_TCC_${new Date().toISOString().split("T")[0]}.json`;
+      a.download = userRole === "MASTER"
+        ? `Laudo_Tecnico_Seguranca_Industrial_TCC_${new Date().toISOString().split("T")[0]}.json`
+        : `Laudo_Tecnico_Conformidade_NR06_NR12_${new Date().toISOString().split("T")[0]}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -88,7 +92,11 @@ export default function SafetyAnalyticsModal({
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-xl font-bold text-white tracking-tight">Painel Analítico de Segurança & Normas (TCC)</h2>
+                <h2 className="text-xl font-bold text-white tracking-tight">
+                  {userRole === "MASTER" 
+                    ? "Painel Analítico de Segurança & Normas (TCC)" 
+                    : "Painel Analítico de Segurança & Conformidade (NR-06 / NR-12)"}
+                </h2>
                 <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-green-500/10 text-green-400 border border-green-500/30">
                   Em Conformidade
                 </span>
@@ -158,18 +166,32 @@ export default function SafetyAnalyticsModal({
           {/* TAB 1: NORMAS REGULAMENTADORAS */}
           {activeTab === "NORMAS" && (
             <div className="space-y-4">
-              <div className="bg-zinc-950/70 p-4 rounded-xl border border-yellow-500/20 mb-4">
-                <h3 className="text-sm font-bold text-yellow-500 flex items-center gap-2 mb-1">
-                  <Award className="w-4 h-4" />
-                  Fundamentação Legal e Técnica para Banca do TCC
-                </h3>
-                <p className="text-xs text-zinc-400 leading-relaxed">
-                  O sistema atende diretamente às exigências legais da <strong>NR-06 (Equipamentos de Proteção Individual)</strong>, 
-                  garantindo rastreabilidade do uso efetivo do capacete classe B e controle preventivo de calibração, além da 
-                  <strong> NR-12 (Segurança no Trabalho em Máquinas e Equipamentos)</strong> ao permitir paradas de emergência e 
-                  identificação de acidentes em milissegundos.
-                </p>
-              </div>
+              {userRole === "MASTER" ? (
+                <div className="bg-zinc-950/70 p-4 rounded-xl border border-yellow-500/20 mb-4">
+                  <h3 className="text-sm font-bold text-yellow-500 flex items-center gap-2 mb-1">
+                    <Award className="w-4 h-4" />
+                    Fundamentação Legal e Técnica para Banca do TCC
+                  </h3>
+                  <p className="text-xs text-zinc-400 leading-relaxed">
+                    O sistema atende diretamente às exigências legais da <strong>NR-06 (Equipamentos de Proteção Individual)</strong>, 
+                    garantindo rastreabilidade do uso efetivo do capacete classe B e controle preventivo de calibração, além da 
+                    <strong> NR-12 (Segurança no Trabalho em Máquinas e Equipamentos)</strong> ao permitir paradas de emergência e 
+                    identificação de acidentes em milissegundos.
+                  </p>
+                </div>
+              ) : (
+                <div className="bg-zinc-950/70 p-4 rounded-xl border border-green-500/20 mb-4">
+                  <h3 className="text-sm font-bold text-green-400 flex items-center gap-2 mb-1">
+                    <CheckCircle2 className="w-4 h-4" />
+                    Conformidade com Diretrizes MTE (NR-06 & NR-12)
+                  </h3>
+                  <p className="text-xs text-zinc-400 leading-relaxed">
+                    Monitoramento contínuo em conformidade com as exigências da <strong>NR-06 (EPI)</strong> para atenuação de impacto mecânico 
+                    e uso obrigatório de capacete, bem como da <strong>NR-12 (Segurança em Máquinas)</strong> para resposta rápida em caso de colisão, 
+                    queda de operador ou áreas de prensagem industrial.
+                  </p>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {guidelines.map((g) => (
@@ -210,7 +232,9 @@ export default function SafetyAnalyticsModal({
                   <div className="w-10 h-10 rounded-xl bg-yellow-500/10 border border-yellow-500/30 flex items-center justify-center text-yellow-500">
                     <Gauge className="w-5 h-5" />
                   </div>
-                  <h4 className="text-sm font-bold text-white">MPU6050 (Acelerômetro & Giroscópio)</h4>
+                  <h4 className="text-sm font-bold text-white">
+                    {userRole === "MASTER" ? "MPU6050 (Acelerômetro & Giroscópio)" : "Sensor de Aceleração & Inclinação"}
+                  </h4>
                   <p className="text-xs text-zinc-400 leading-relaxed">
                     Mede aceleração tridimensional (eixos X, Y, Z). Calcula a resultante vetorial:
                     <br />
@@ -227,7 +251,9 @@ export default function SafetyAnalyticsModal({
                   <div className="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-400">
                     <Zap className="w-5 h-5" />
                   </div>
-                  <h4 className="text-sm font-bold text-white">SW-420 (Vibração Mecânica)</h4>
+                  <h4 className="text-sm font-bold text-white">
+                    {userRole === "MASTER" ? "SW-420 (Vibração Mecânica)" : "Sensor de Choque & Vibração Mecânica"}
+                  </h4>
                   <p className="text-xs text-zinc-400 leading-relaxed">
                     Sensor piezelétrico que detecta oscilações bruscas e impactos transversais diretos no casco do capacete, 
                     validando se o movimento foi uma queda real ou apenas inclinação.
@@ -242,7 +268,9 @@ export default function SafetyAnalyticsModal({
                   <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-blue-400">
                     <Volume2 className="w-5 h-5" />
                   </div>
-                  <h4 className="text-sm font-bold text-white">FC-04 (Ruído Acústico)</h4>
+                  <h4 className="text-sm font-bold text-white">
+                    {userRole === "MASTER" ? "FC-04 (Ruído Acústico)" : "Sensor de Alerta Acústico"}
+                  </h4>
                   <p className="text-xs text-zinc-400 leading-relaxed">
                     Identifica estrondos mecânicos de colisão, rompimento de estruturas ou estampidos de impacto imediato
                     concomitante com a aceleração.
@@ -257,7 +285,7 @@ export default function SafetyAnalyticsModal({
               <div className="bg-zinc-950/70 p-5 rounded-xl border border-white/10">
                 <h4 className="text-sm font-bold text-white mb-2 flex items-center gap-2">
                   <Activity className="w-4 h-4 text-yellow-500" />
-                  Algoritmo de Cálculo de Pontuação de Risco (Score 0 a 100)
+                  {userRole === "MASTER" ? "Algoritmo de Cálculo de Pontuação de Risco (Score 0 a 100)" : "Índice de Risco Operacional em Tempo Real"}
                 </h4>
                 <div className="bg-zinc-900 p-3 rounded-lg font-mono text-xs text-yellow-400 border border-white/5">
                   Pontuação = (PontosMPU [0 a 70]) + (PontosVibracao [0 a 20]) + (PontosSom [0 a 10])

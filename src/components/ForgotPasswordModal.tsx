@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Mail, Lock, Eye, EyeOff, ArrowLeft, Shield, CheckCircle, RefreshCw, AlertTriangle, Clock, KeyRound } from "lucide-react";
+import { Mail, Lock, Eye, EyeOff, ArrowLeft, Shield, CheckCircle, RefreshCw, AlertTriangle, Clock, KeyRound, ChevronDown, Sparkles } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { isValidEmail } from "../utils/formatters";
 import { dataService } from "../services/dataService";
@@ -23,6 +23,7 @@ export default function ForgotPasswordModal({ isOpen, onClose, onSuccess }: Forg
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+  const [showDemoEmails, setShowDemoEmails] = useState(false);
   const [countdown, setCountdown] = useState(600); // 10 minutes in seconds
   const [resendCooldown, setResendCooldown] = useState(0);
   const [redirectCountdown, setRedirectCountdown] = useState(3);
@@ -304,32 +305,49 @@ export default function ForgotPasswordModal({ isOpen, onClose, onSuccess }: Forg
                   />
                 </div>
 
-                {/* E-mails para demonstração rápida na banca */}
+                {/* E-mails para demonstração rápida (Colapsável) */}
                 <div className="pt-1">
-                  <p className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2 text-center">
-                    Acesso Rápido para Demonstração (TCC):
-                  </p>
-                  <div className="flex flex-col gap-1.5">
-                    {[
-                      { label: "Pedro Casaburi (E-mail Real Resend)", mail: "pedrocasaburi@hotmail.com" },
-                      { label: "Admin Empresa (Gbxm)", mail: "gbxm.seguranca@industrial.com" },
-                      { label: "Admin Master (Dono)", mail: "adminmaster@industrial.com" },
-                      { label: "Visualizador / Auditor", mail: "visualizador@industrial.com" }
-                    ].map(item => (
-                      <button
-                        key={item.mail}
-                        type="button"
-                        onClick={() => {
-                          setEmail(item.mail);
-                          setError("");
-                        }}
-                        className="text-[11px] bg-zinc-900/90 hover:bg-zinc-800 text-zinc-300 hover:text-yellow-400 px-3 py-1.5 rounded-lg border border-white/5 transition-all text-left flex items-center justify-between cursor-pointer group"
+                  <button
+                    type="button"
+                    onClick={() => setShowDemoEmails(!showDemoEmails)}
+                    className="w-full text-center text-[10px] text-zinc-500 hover:text-yellow-500 uppercase tracking-wider mb-2 flex items-center justify-center gap-1.5 cursor-pointer py-1 transition-colors"
+                    aria-expanded={showDemoEmails}
+                  >
+                    <Sparkles className="w-3 h-3 text-yellow-500/70" />
+                    <span>Atalhos de Demonstração</span>
+                    <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${showDemoEmails ? "rotate-180 text-yellow-500" : ""}`} />
+                  </button>
+
+                  <AnimatePresence>
+                    {showDemoEmails && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: "auto" }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="overflow-hidden space-y-1.5 pt-1"
                       >
-                        <span className="font-medium text-zinc-400 group-hover:text-zinc-200">{item.label}</span>
-                        <span className="font-mono text-[10px] text-yellow-500/80 group-hover:text-yellow-400">{item.mail}</span>
-                      </button>
-                    ))}
-                  </div>
+                        {[
+                          { label: "Pedro Casaburi (E-mail Real Resend)", mail: "pedrocasaburi@hotmail.com" },
+                          { label: "Admin Empresa (Gbxm)", mail: "gbxm.seguranca@industrial.com" },
+                          { label: "Admin Master (Dono)", mail: "adminmaster@industrial.com" },
+                          { label: "Visualizador / Auditor", mail: "visualizador@industrial.com" }
+                        ].map(item => (
+                          <button
+                            key={item.mail}
+                            type="button"
+                            onClick={() => {
+                              setEmail(item.mail);
+                              setError("");
+                            }}
+                            className="text-[11px] bg-zinc-900/90 hover:bg-zinc-800 text-zinc-300 hover:text-yellow-400 px-3 py-1.5 rounded-lg border border-white/5 transition-all text-left flex items-center justify-between cursor-pointer group w-full"
+                          >
+                            <span className="font-medium text-zinc-400 group-hover:text-zinc-200">{item.label}</span>
+                            <span className="font-mono text-[10px] text-yellow-500/80 group-hover:text-yellow-400">{item.mail}</span>
+                          </button>
+                        ))}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
 
                 {error && (

@@ -721,6 +721,118 @@ async function startServer() {
   });
 
   // ============================================================
+  // CONFIGURAÇÕES GLOBAIS DA APLICAÇÃO (Admin Master / FAQ Forms)
+  // ============================================================
+  const inMemorySettings = new Map<string, { value: string; description?: string; updatedBy?: string; updatedAt: string }>();
+  // Seed inicial padrão para faq_forms_url
+  inMemorySettings.set("faq_forms_url", {
+    value: "",
+    description: "URL do Google Forms para solicitações e FAQ dos usuários. Configurável pelo Admin Master.",
+    updatedBy: "system",
+    updatedAt: new Date().toISOString()
+  });
+
+  app.get("/api/settings/:key", async (req, res) => {
+    try {
+      const { key } = req.params;
+      if (!key) {
+        return res.status(400).json({ success: false, message: "Chave não informada." });
+      }
+
+      // 1. Tentar ler do Supabase se configurado
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from("app_settings")
+            .select("*")
+            .eq("key", key)
+            .maybeSingle();
+
+          if (!error && data) {
+            return res.json({
+              success: true,
+              key: data.key,
+              value: data.value ?? "",
+              description: data.description,
+              updatedBy: data.updated_by,
+              updatedAt: data.updated_at
+            });
+          }
+        } catch (dbErr) {
+          console.warn(`[Settings] Erro ao consultar chave '${key}' no Supabase:`, dbErr);
+        }
+      }
+
+      // 2. Fallback para cache em memória
+      const memSetting = inMemorySettings.get(key);
+      return res.json({
+        success: true,
+        key,
+        value: memSetting ? memSetting.value : "",
+        description: memSetting?.description,
+        updatedBy: memSetting?.updatedBy,
+        updatedAt: memSetting?.updatedAt
+      });
+    } catch (err) {
+      console.error("[Settings] Erro no GET /api/settings/:key:", err);
+      return res.status(500).json({ success: false, message: "Erro interno ao buscar configuração." });
+    }
+  });
+
+  app.post("/api/settings", async (req, res) => {
+    try {
+      const { key, value, description, updatedBy } = req.body;
+      if (!key || typeof key !== "string") {
+        return res.status(400).json({ success: false, message: "A chave da configuração é obrigatória." });
+      }
+
+      const safeValue = typeof value === "string" ? value.trim() : "";
+      const nowIso = new Date().toISOString();
+
+      // Salva em memória
+      inMemorySettings.set(key, {
+        value: safeValue,
+        description: description || inMemorySettings.get(key)?.description,
+        updatedBy: updatedBy || "admin",
+        updatedAt: nowIso
+      });
+
+      // Salva no Supabase se ativo
+      if (supabase) {
+        try {
+          const { error } = await supabase
+            .from("app_settings")
+            .upsert({
+              key,
+              value: safeValue,
+              description: description || undefined,
+              updated_by: updatedBy || "admin",
+              updated_at: nowIso
+            }, { onConflict: "key" });
+
+          if (error) {
+            console.warn("[Settings] Erro ao persistir configuração no Supabase:", error);
+          }
+        } catch (dbErr) {
+          console.warn("[Settings] Erro ao atualizar Supabase app_settings:", dbErr);
+        }
+      }
+
+      console.log(`[Settings] Configuração '${key}' atualizada com sucesso por '${updatedBy || "admin"}': ${safeValue}`);
+      return res.json({
+        success: true,
+        key,
+        value: safeValue,
+        updatedBy,
+        updatedAt: nowIso
+      });
+    } catch (err) {
+      console.error("[Settings] Erro no POST /api/settings:", err);
+      return res.status(500).json({ success: false, message: "Erro interno ao atualizar configuração." });
+    }
+  });
+
+  // ============================================================
   // PROCESSAMENTO DE TELEMETRIA DO ESP32
   // ============================================================
   function applyESP32Data(dados: any, clientIp?: string) {

@@ -1,140 +1,281 @@
-# Industrial Safety Monitor — Sistema IoT com ESP32, Supabase & Vercel
+# 🦺 Industrial Safety Monitor
 
-Sistema de monitoramento e telemetria industrial em tempo real para operadores e capacetes inteligentes (IoT), com dashboard interativo, persistência em nuvem com **Supabase (PostgreSQL)** e deploy automático na **Vercel**.
+> **Sistema de Monitoramento Industrial IoT com Capacetes Inteligentes ESP32**  
+> Trabalho de Conclusão de Curso (TCC) — Engenharia / Tecnologia  
+> Em conformidade com **NR-06** (EPI), **NR-12** (Segurança em Máquinas) e **LGPD** (Lei nº 13.709/2018)
 
----
-
-## Tecnologias
-
-- **Frontend:** React 19, TypeScript, Vite 6, Tailwind CSS 4
-- **Interface & Visualização:** React Leaflet (mapa geoespacial), Lucide React (ícones), Motion (animações)
-- **Banco de Dados em Nuvem:** Supabase (PostgreSQL com RLS, Triggers e Índices)
-- **Hardware / IoT:** ESP32 (Wi-Fi, sensor MPU6050, GPS TinyGPSPlus, SW-420, FC-04)
-- **Deploy:** Vercel (CI/CD nativo com GitHub)
+[![Deploy](https://img.shields.io/badge/Deploy-Vercel-black?logo=vercel)](https://vercel.com)
+[![Supabase](https://img.shields.io/badge/Database-Supabase-3ECF8E?logo=supabase)](https://supabase.com)
+[![ESP32](https://img.shields.io/badge/Hardware-ESP32-red?logo=espressif)](https://www.espressif.com)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.8-blue?logo=typescript)](https://www.typescriptlang.org)
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react)](https://react.dev)
 
 ---
 
-## Estrutura do Repositório
+## 📋 Visão Geral
+
+O **Industrial Safety Monitor** é um sistema de monitoramento em tempo real de operadores industriais equipados com capacetes inteligentes ESP32. O sistema detecta impactos, quedas, vibração, som e geolocalização GPS, enviando alertas imediatos para a central de operações.
+
+### Funcionalidades Principais
+
+- 🔴 **Alertas de Emergência em Tempo Real** — Detecção de impactos via MPU6050 (acelerômetro/giroscópio)
+- 🗺️ **Rastreamento GPS** — Localização ao vivo dos operadores via módulo NEO-6M
+- 📡 **Dashboard WebSocket** — Telemetria contínua a 1 Hz via WebSocket + ngrok
+- 🔒 **RBAC Completo** — 3 níveis de acesso: Master, Admin Empresa, Visualizador
+- 🛡️ **Segurança LGPD** — Hash SHA-256 de senhas, mascaramento de CPF, logs de auditoria
+- 📊 **Analytics NR-06/NR-12** — Conformidade com normas regulamentadoras
+- 🌐 **Bidirecional Supabase** — Alterações no banco refletem em tempo real no frontend
+- 📱 **Responsivo** — Layout adaptado para desktop, tablet e mobile
+
+---
+
+## 🏗️ Arquitetura do Sistema
 
 ```
-Teste_IAstudio2.0/
-├── src/                          # Código-fonte React/TypeScript
-│   ├── components/               # Modais de gestão, Dashboard, Mapa, etc.
-│   │   ├── Dashboard.tsx         # Dashboard operacional principal
-│   │   ├── Map.tsx               # Rastreamento geográfico em tempo real
-│   │   ├── HelmetManagementModal.tsx   # Gestão e calibração de capacetes
-│   │   ├── EmployeeManagementModal.tsx # Cadastro e monitoramento de funcionários
-│   │   ├── UserManagementModal.tsx     # Controle de acesso e permissões (RBAC)
-│   │   ├── SafetyAnalyticsModal.tsx    # Conformidade NR-06 / NR-12 e laudos TCC
-│   │   └── Login.tsx / Register.tsx    # Autenticação de usuários
-│   ├── services/
-│   │   ├── supabaseClient.ts     # Cliente Supabase com detecção inteligente
-│   │   └── dataService.ts        # Camada resiliente (Supabase + LocalStorage Fallback)
-│   ├── types.ts                  # Interfaces TypeScript compartilhadas
-│   ├── App.tsx                   # Componente central do sistema
-│   └── main.tsx                  # Ponto de entrada React
-├── public/                       # Favicon e arquivos estáticos
-├── esp32/                        # Firmware do microcontrolador
-│   └── Codigo_Teste_API.ino      # Código C++ para o ESP32 com sensores
-├── api-sensores-local/           # Servidor local Express para testes de telemetria
-│   ├── server.js                 # API Express (POST /api/dados)
-│   └── package.json              # Dependências do servidor local
-├── supabase_schema.sql           # Schema SQL completo (tabelas, RLS e seeds)
-├── vercel.json                   # Configuração de roteamento SPA da Vercel
-├── vite.config.ts                # Configuração do Vite
-├── package.json                  # Dependências e scripts do frontend
-├── .env.example                  # Template de variáveis de ambiente
-├── .gitignore                    # Arquivos ignorados pelo Git (node_modules, .env)
-├── iniciar_servidor.bat          # Script para rodar servidor localmente
-└── iniciar_tunel_ngrok.bat       # Script para criar túnel ngrok
+┌─────────────────────────────────────────────────────────┐
+│                    FRONTEND (React/Vite)                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────┐ │
+│  │  Dashboard   │  │  Map (GPS)   │  │ Modais RBAC    │ │
+│  │  Telemetria  │  │  Leaflet.js  │  │ Capacetes/Func │ │
+│  └──────────────┘  └──────────────┘  └────────────────┘ │
+│           │                 │                  │          │
+│  ┌─────────────────────────────────────────────────────┐ │
+│  │                  dataService.ts                      │ │
+│  │   ┌─────────────┐    ┌──────────────────────────┐   │ │
+│  │   │  Supabase   │    │  LocalStorage (Fallback)  │   │ │
+│  │   │  Realtime   │    │  Smart Heartbeat Sync     │   │ │
+│  │   └─────────────┘    └──────────────────────────┘   │ │
+│  └─────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────┘
+                          │ WebSocket (ws://)
+┌─────────────────────────────────────────────────────────┐
+│              BACKEND (Node.js / Express / server.ts)      │
+│   WebSocket Server │ API REST │ OTP Email (Resend)        │
+└─────────────────────────────────────────────────────────┘
+                          │ HTTP POST (ngrok tunnel)
+┌─────────────────────────────────────────────────────────┐
+│                   HARDWARE (ESP32 + Sensores)             │
+│  MPU6050 (acelerômetro) │ SW-420 (vibração)              │
+│  FC-04 (som)            │ NEO-6M (GPS)                   │
+│  WiFi IEEE 802.11 b/g/n │ Firmware Arduino IDE           │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 1. Configuração do Supabase (Banco de Dados em Nuvem)
+## 🛠️ Stack Tecnológica
 
-1. Acesse [supabase.com](https://supabase.com) e crie ou abra seu projeto.
-2. No menu lateral esquerdo, clique em **SQL Editor**.
-3. Clique em **New query**.
-4. Copie todo o conteúdo do arquivo [`supabase_schema.sql`](supabase_schema.sql) deste repositório e cole no editor.
-5. Clique em **Run** (ou `Ctrl + Enter`).
-   - O script criará as tabelas `companies`, `users`, `helmets`, `employees`, `safety_guidelines` e `accident_events`.
-   - Também aplicará políticas de segurança (RLS) e dados iniciais de demonstração (Seed).
-6. Vá em **Project Settings** (ícone de engrenagem) → **API**:
-   - Copie o **Project URL** (ex: `https://xyzcompany.supabase.co`).
-   - Copie a chave **anon public** (`Project API keys` → `anon` / `public`).
+| Camada | Tecnologia | Versão |
+|--------|-----------|--------|
+| Frontend | React + TypeScript | 19 / 5.8 |
+| Build | Vite | 6.x |
+| Estilização | Tailwind CSS v4 | 4.1 |
+| Animações | Motion (Framer) | 12.x |
+| Banco de Dados | Supabase (PostgreSQL) | Latest |
+| Mapas | React Leaflet | 5.x |
+| Backend | Node.js + Express + tsx | 5.x |
+| WebSocket | ws | 8.x |
+| Email (OTP) | Resend API | 6.x |
+| Hardware | ESP32 + Arduino IDE | ESP-IDF |
+| Deploy | Vercel (Frontend) | Latest |
+| Túnel | ngrok | v3 |
 
 ---
 
-## 2. Deploy na Vercel (Conexão via GitHub)
+## ⚙️ Configuração e Instalação
 
-### Passo 1: Suba o código para o seu repositório no GitHub
+### Pré-requisitos
+
+- Node.js ≥ 20.x
+- Conta no [Supabase](https://supabase.com) (gratuito)
+- Conta no [Vercel](https://vercel.com) (gratuito)
+- Conta no [Resend](https://resend.com) (para OTP de senha)
+- ngrok (para túnel local com ESP32)
+
+### 1. Clonar o Repositório
+
 ```bash
-git add .
-git commit -m "feat: preparar projeto para Vercel e Supabase"
-git push -u origin main
+git clone https://github.com/SEU_USUARIO/industrial-safety-monitor.git
+cd industrial-safety-monitor
 ```
 
-### Passo 2: Importe o projeto na Vercel
-1. Acesse [vercel.com](https://vercel.com) e conecte sua conta do GitHub.
-2. Clique em **"Add New..."** → **"Project"**.
-3. Localize e selecione o repositório do projeto.
-4. A Vercel detectará automaticamente que é um projeto **Vite**:
-   - **Framework Preset:** `Vite`
-   - **Root Directory:** `./` (raiz)
-   - **Build Command:** `npm run build`
-   - **Output Directory:** `dist`
+### 2. Instalar Dependências
 
-### Passo 3: Configure as Variáveis de Ambiente no Vercel
-Antes de clicar em Deploy, expanda a seção **Environment Variables** e adicione:
-
-| Chave | Valor | Descrição |
-|---|---|---|
-| `VITE_SUPABASE_URL` | `https://seu-id.supabase.co` | URL do seu projeto no Supabase |
-| `VITE_SUPABASE_ANON_KEY` | `sua-chave-anon-publica` | Chave pública anônima do Supabase |
-| `VITE_API_URL` | *(opcional)* | URL do túnel ngrok/servidor se usar ESP32 físico via internet |
-
-5. Clique em **"Deploy"**. Em menos de 1 minuto seu dashboard estará no ar!
-
----
-
-## 3. Execução em Desenvolvimento Local
-
-### 1. Instalar Dependências
 ```bash
 npm install
 ```
 
-### 2. Configurar Variáveis Locais
-Crie ou edite o arquivo `.env` na raiz:
-```env
-VITE_SUPABASE_URL=https://seu-id.supabase.co
-VITE_SUPABASE_ANON_KEY=sua-chave-anon-publica
-VITE_API_URL=
+### 3. Configurar Variáveis de Ambiente
+
+```bash
+cp .env.example .env
 ```
 
-### 3. Iniciar o Servidor Local
-Você pode clicar duas vezes em `iniciar_servidor.bat` ou rodar no terminal:
+Edite o `.env` com suas credenciais:
+
+```env
+# Supabase
+VITE_SUPABASE_URL=https://seu-projeto.supabase.co
+VITE_SUPABASE_ANON_KEY=sua-chave-anon-aqui
+
+# Backend (URL local ou ngrok)
+VITE_API_URL=http://SEU_IP_LOCAL:3000
+
+# Email OTP (Resend)
+RESEND_API_KEY=re_sua_chave_aqui
+RESEND_FROM_EMAIL=Industrial Safety Monitor <onboarding@resend.dev>
+```
+
+> ⚠️ **NUNCA** faça commit do arquivo `.env` — ele está no `.gitignore`
+
+### 4. Configurar o Banco de Dados Supabase
+
+No painel do Supabase → SQL Editor, cole e execute o conteúdo de [`supabase_schema.sql`](./supabase_schema.sql).
+
+Isso cria:
+- Tabelas: `companies`, `users`, `helmets`, `employees`, `telemetry_logs`, `accident_events`, `safety_guidelines`, `password_resets`, `security_audit_logs`, `app_settings`
+- Row Level Security (RLS) configurado
+- Realtime Bidirecional habilitado para todas as tabelas
+- Dados iniciais de demonstração (seed)
+
+### 5. Executar Localmente
+
 ```bash
+# Inicia o backend (WebSocket + API REST) e o frontend (Vite) juntos
 npm run dev
 ```
-Acesse no navegador: `http://localhost:3000` (ou a porta informada pelo Vite).
+
+Ou separadamente:
+
+```bash
+# Backend (server.ts via tsx)
+node node_modules/tsx/dist/cli.mjs server.ts
+
+# Frontend (Vite)
+npx vite --port 3000 --host 0.0.0.0
+```
+
+### 6. Túnel ngrok (para o ESP32)
+
+```bash
+# Expor o servidor para a internet
+ngrok http 3000
+```
+
+Copie a URL HTTPS gerada (ex: `https://abc123.ngrok.io`) e configure no firmware do ESP32.
 
 ---
 
-## 4. Credenciais de Acesso Padrão
+## 👤 Usuários Padrão (Demonstração)
 
-| Perfil | Usuário | Senha | Função |
-|---|---|---|---|
-| **Admin Geral (Master)** | `adminmaster` | `123456` | Acesso total a todas as configurações |
-| **Admin Empresa** | `Gbxm` | `123456` | Gestão de capacetes, operadores e auditorias |
-| **Visualizador** | `visualizador` | `123456` | Acesso apenas para leitura |
+| Usuário | Senha | Nível |
+|---------|-------|-------|
+| `adminmaster` | `123456` | 👑 Admin Master (acesso total + disclaimers técnicos) |
+| `Gbxm` | `123456` | 🏢 Admin Empresa (gestão operacional) |
+| `visualizador` | `123456` | 👁️ Visualizador (somente leitura) |
+
+> 🔐 As senhas são automaticamente migradas para hash SHA-256 no primeiro login
 
 ---
 
-## 5. Integração com o ESP32
+## 🔒 Segurança e LGPD
 
-1. Abra o arquivo [`esp32/Codigo_Teste_API.ino`](esp32/Codigo_Teste_API.ino) na Arduino IDE.
-2. Ajuste o Wi-Fi (`ssid` e `password`).
-3. Configure o endereço de envio `apiURL` apontando para o seu IP local (ex: `http://192.168.0.xxx:3000/api/dados`) ou URL pública gerada pelo ngrok.
-4. Faça o upload para a placa ESP32.
+- **Hashing de Senhas**: SHA-256 com salt via Web Crypto API (sem dependência externa)
+- **Migração Transparente**: Senhas legadas em texto puro são automaticamente hasheadas no login
+- **Mascaramento de CPF**: `***.456.789-**` para roles não-Master (LGPD - Princípio da Minimização)
+- **Logs de Auditoria**: Todas as ações críticas registradas em `security_audit_logs`
+- **OTP Seguro**: Código de 6 dígitos com expiração de 10 minutos para recuperação de senha
+- **RBAC**: Controle granular de permissões por role
+- **Disclaimers Técnicos**: Visíveis apenas para Admin Master (IPs, nomes de sensores, etc.)
+- **Security Headers (Vercel)**: X-Frame-Options, HSTS, CSP, X-Content-Type-Options
+
+---
+
+## 📡 Comunicação Bidirecional Supabase
+
+O sistema sincroniza automaticamente:
+
+1. **Frontend → Supabase**: Cadastros e atualizações via `dataService.ts`
+2. **Supabase → Frontend**: Alterações diretas no banco refletem em ≤1s via Realtime WebSocket
+3. **Heartbeat Sync**: A cada 5 segundos + ao retornar ao foco da aba
+
+### Tabelas com Realtime Ativo
+
+`users` | `employees` | `helmets` | `accident_events` | `safety_guidelines` | `app_settings` | `password_resets`
+
+---
+
+## 🚀 Deploy no Vercel
+
+1. Conecte o repositório GitHub ao Vercel
+2. Configure as variáveis de ambiente no painel do Vercel:
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_ANON_KEY`
+3. O `vercel.json` já está configurado com:
+   - Build command: `npm run build`
+   - Security Headers (HSTS, X-Frame-Options, etc.)
+   - SPA Rewrite (React Router)
+   - Cache de assets estáticos (1 ano)
+
+---
+
+## 📁 Estrutura do Projeto
+
+```
+├── src/
+│   ├── components/          # Componentes React
+│   │   ├── Dashboard.tsx    # Painel principal + telemetria
+│   │   ├── Login.tsx        # Autenticação
+│   │   ├── Register.tsx     # Cadastro de usuários
+│   │   ├── Map.tsx          # Mapa ao vivo (Leaflet)
+│   │   ├── ProfileModal.tsx # Edição de perfil
+│   │   ├── UserManagementModal.tsx    # RBAC + Config FAQ
+│   │   ├── HelmetManagementModal.tsx  # Gestão de capacetes
+│   │   ├── EmployeeManagementModal.tsx# Gestão de funcionários
+│   │   ├── SafetyAnalyticsModal.tsx   # NR-06/NR-12
+│   │   ├── ForgotPasswordModal.tsx    # OTP recuperação de senha
+│   │   ├── PrivacyPolicyModal.tsx     # LGPD
+│   │   ├── CookieConsentBanner.tsx    # LGPD Cookies
+│   │   ├── Sidebar.tsx      # Lista de operadores (mapa)
+│   │   └── VideoPlayer.tsx  # Stream de câmera
+│   ├── services/
+│   │   ├── dataService.ts   # Serviço unificado (Supabase + LocalStorage)
+│   │   └── supabaseClient.ts# Inicialização do cliente Supabase
+│   ├── utils/
+│   │   ├── security.ts      # Hash, LGPD, sanitização, auditoria
+│   │   └── formatters.ts    # CPF, telefone, validações
+│   ├── types.ts             # Tipos TypeScript globais
+│   ├── App.tsx              # Roteamento principal + WebSocket
+│   ├── main.tsx             # Entry point React
+│   └── index.css            # Estilos globais (Tailwind v4 + Inter)
+├── esp32/                   # Firmware dos capacetes
+├── api-sensores-local/      # API local auxiliar
+├── server.ts                # Backend Node.js (WebSocket + REST + OTP)
+├── supabase_schema.sql      # Schema completo do banco de dados
+├── vercel.json              # Configuração de deploy + security headers
+├── vite.config.ts           # Configuração do Vite
+├── .env.example             # Template de variáveis de ambiente
+└── .gitignore               # Protege .env e node_modules
+```
+
+---
+
+## 🔧 Scripts Disponíveis
+
+```bash
+npm run dev          # Inicia backend + frontend (desenvolvimento)
+npm run dev:vite     # Somente frontend Vite
+npm run build        # Build de produção (TypeScript + Vite)
+npm run preview      # Preview do build de produção
+```
+
+---
+
+## 📄 Licença
+
+Projeto acadêmico desenvolvido para o Trabalho de Conclusão de Curso.  
+© 2026 Industrial Safety Monitor — Todos os direitos reservados.
+
+---
+
+*Desenvolvido com ❤️ para garantir a segurança dos trabalhadores da indústria brasileira.*

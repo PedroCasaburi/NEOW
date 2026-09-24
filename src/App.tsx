@@ -102,12 +102,22 @@ export default function App() {
           return prev;
         });
       } else if (table === "users") {
-        // Se for atualização do usuário atual, sincronizar permissões RBAC ao vivo
+        // Se for atualização do usuário atual, sincronizar permissões RBAC e dados de perfil ao vivo
         if (record && record.username === username) {
           if (record.role && record.role !== userRole) {
             setUserRole(record.role);
-            setCurrentUser(prev => ({ ...prev, role: record.role }));
           }
+          setCurrentUser(prev => ({
+            ...prev,
+            firstName: record.firstName !== undefined ? record.firstName : prev.firstName,
+            lastName: record.lastName !== undefined ? record.lastName : prev.lastName,
+            role: record.role || prev.role,
+            cpf: record.cpf !== undefined ? record.cpf : prev.cpf,
+            position: record.position !== undefined ? record.position : prev.position,
+            department: record.department !== undefined ? record.department : prev.department,
+            email: record.email !== undefined ? record.email : prev.email,
+            phone: record.phone !== undefined ? record.phone : prev.phone
+          }));
         }
       } else if (table === "accident_events" && event === "INSERT") {
         setStats(prev => ({
@@ -248,20 +258,24 @@ export default function App() {
     setLoginError(authRes.message || "Usuário ou senha incorretos.");
   };
 
-  const handleUpdateUser = async (updated: UserProfile): Promise<boolean> => {
+  const handleUpdateUser = async (updated: UserProfile): Promise<{ success: boolean; message: string }> => {
     try {
-      await dataService.saveUser(updated);
-      setCurrentUser(updated);
-      setUsername(updated.username);
-      return true;
-    } catch {
-      return false;
+      const res = await dataService.saveUser(updated, currentUser.username);
+      if (res.success) {
+        setCurrentUser(updated);
+        setUsername(updated.username);
+        return { success: true, message: res.message || "Perfil atualizado e sincronizado com o Supabase com sucesso!" };
+      } else {
+        return { success: false, message: res.message || "Erro ao atualizar perfil no Supabase." };
+      }
+    } catch (err: any) {
+      return { success: false, message: err?.message || "Falha ao processar atualização do perfil." };
     }
   };
 
   const handleRegister = async (userData: any) => {
     try {
-      await dataService.saveUser({
+      const res = await dataService.saveUser({
         firstName: userData.firstName,
         lastName: userData.lastName,
         username: userData.username,
@@ -274,11 +288,17 @@ export default function App() {
         phone: userData.phone,
         active: true
       });
-      setAuthView("LOGIN");
-      setLoginError("");
-      return true;
-    } catch (err) {
-      console.error(err);
+      if (res.success) {
+        setAuthView("LOGIN");
+        setLoginError("");
+        setLoginSuccessMessage("Cadastro realizado com sucesso no Supabase! Você já pode entrar.");
+        return true;
+      } else {
+        setLoginError(res.message || "Erro ao cadastrar usuário no Supabase.");
+        return false;
+      }
+    } catch (err: any) {
+      setLoginError(err?.message || "Erro ao cadastrar usuário.");
       return false;
     }
   };
@@ -423,6 +443,7 @@ export default function App() {
                 selectedEmployeeId={selectedEmployeeId} 
                 onSelectEmployee={setSelectedEmployeeId} 
                 userLocation={userLocation}
+                userRole={userRole}
               />
               
               {/* Map Overlay Controls */}
@@ -528,6 +549,7 @@ export default function App() {
         isOpen={showAnalyticsModal}
         onClose={() => setShowAnalyticsModal(false)}
         employees={employees}
+        userRole={userRole}
       />
 
       {/* Modal de Política de Privacidade e Diretrizes LGPD */}

@@ -1,6 +1,6 @@
 import React, { useState } from "react";
-import { HardHat, User, Lock, Eye, EyeOff, AlertTriangle, Crown, Building2 } from "lucide-react";
-import { motion } from "motion/react";
+import { HardHat, User, Lock, Eye, EyeOff, AlertTriangle, Crown, Building2, ChevronDown, Sparkles } from "lucide-react";
+import { motion, AnimatePresence } from "motion/react";
 
 interface LoginProps {
   onLogin: (user: string, pass: string) => void;
@@ -14,6 +14,8 @@ export default function Login({ onLogin, onGoToRegister, onForgotPassword, error
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+
+  const [showDemoShortcuts, setShowDemoShortcuts] = useState(false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -34,7 +36,7 @@ export default function Login({ onLogin, onGoToRegister, onForgotPassword, error
     >
       {/* Background Image */}
       <div 
-        className="absolute inset-0 bg-cover bg-center bg-no-referrer"
+      className="absolute inset-0 bg-cover bg-center bg-no-repeat"
         style={{ 
           backgroundImage: `url('https://images.unsplash.com/photo-1516937941344-00b4e0337589?q=80&w=2070&auto=format&fit=crop')`,
           filter: 'brightness(0.6)'
@@ -142,42 +144,61 @@ export default function Login({ onLogin, onGoToRegister, onForgotPassword, error
           </button>
         </form>
 
-        {/* Botoes de Acesso Rapido para Apresentacao da Banca (TCC) */}
-        <div className="mt-6 pt-5 border-t border-white/10">
-          <p className="text-[10px] font-bold text-yellow-500 uppercase tracking-widest text-center mb-3">
-            Acesso Rápido para Demonstração (TCC)
-          </p>
-          <div className="grid grid-cols-3 gap-2">
-            <button
-              type="button"
-              onClick={() => handleQuickLogin("adminmaster", "123456")}
-              className="p-2 rounded-xl bg-yellow-500/10 hover:bg-yellow-500/20 border border-yellow-500/30 text-yellow-400 text-[9px] font-bold uppercase tracking-wider flex flex-col items-center gap-1 transition-all active:scale-95 text-center"
-              title="Acesso Total ao Sistema (Dono/Master)"
-            >
-              <Crown className="w-4 h-4 text-yellow-500" />
-              <span>Admin Master</span>
-            </button>
+        {/* Atalhos para Demonstração / Homologação (Colapsável para Usuário Final) */}
+        <div className="mt-6 pt-4 border-t border-white/10">
+          <button
+            type="button"
+            onClick={() => setShowDemoShortcuts(!showDemoShortcuts)}
+            className="w-full flex items-center justify-center gap-1.5 text-[10px] font-bold text-zinc-500 hover:text-yellow-500 uppercase tracking-widest transition-colors cursor-pointer py-1"
+            aria-expanded={showDemoShortcuts}
+          >
+            <Sparkles className="w-3 h-3 text-yellow-500/70" />
+            <span>Acesso Rápido para Demonstração</span>
+            <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${showDemoShortcuts ? "rotate-180 text-yellow-500" : ""}`} />
+          </button>
 
-            <button
-              type="button"
-              onClick={() => handleQuickLogin("Gbxm", "123456")}
-              className="p-2 rounded-xl bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-400 text-[9px] font-bold uppercase tracking-wider flex flex-col items-center gap-1 transition-all active:scale-95 text-center"
-              title="Gestor da Empresa (COI)"
-            >
-              <Building2 className="w-4 h-4 text-blue-400" />
-              <span>Admin Empresa</span>
-            </button>
+          <AnimatePresence>
+            {showDemoShortcuts && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                className="overflow-hidden pt-3"
+              >
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleQuickLogin("adminmaster", "123456")}
+                    className="p-2 rounded-xl bg-yellow-500/10 hover:bg-yellow-500/20 border border-yellow-500/30 text-yellow-400 text-[9px] font-bold uppercase tracking-wider flex flex-col items-center gap-1 transition-all active:scale-95 text-center"
+                    title="Acesso Total ao Sistema (Dono/Master)"
+                  >
+                    <Crown className="w-4 h-4 text-yellow-500" />
+                    <span>Admin Master</span>
+                  </button>
 
-            <button
-              type="button"
-              onClick={() => handleQuickLogin("visualizador", "123456")}
-              className="p-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-zinc-300 text-[9px] font-bold uppercase tracking-wider flex flex-col items-center gap-1 transition-all active:scale-95 text-center"
-              title="Somente Monitoramento e Leitura"
-            >
-              <Eye className="w-4 h-4 text-zinc-400" />
-              <span>Visualizador</span>
-            </button>
-          </div>
+                  <button
+                    type="button"
+                    onClick={() => handleQuickLogin("Gbxm", "123456")}
+                    className="p-2 rounded-xl bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-400 text-[9px] font-bold uppercase tracking-wider flex flex-col items-center gap-1 transition-all active:scale-95 text-center"
+                    title="Gestor da Empresa (COI)"
+                  >
+                    <Building2 className="w-4 h-4 text-blue-400" />
+                    <span>Admin Empresa</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleQuickLogin("visualizador", "123456")}
+                    className="p-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-zinc-300 text-[9px] font-bold uppercase tracking-wider flex flex-col items-center gap-1 transition-all active:scale-95 text-center"
+                    title="Somente Monitoramento e Leitura"
+                  >
+                    <Eye className="w-4 h-4 text-zinc-400" />
+                    <span>Visualizador</span>
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         <div className="mt-6 pt-4 border-t border-white/5 text-center">

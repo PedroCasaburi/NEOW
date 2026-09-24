@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   AlertTriangle, 
   Bell, 
@@ -26,10 +26,13 @@ import {
   Menu,
   X as MenuCloseIcon,
   Cookie,
-  ShieldCheck
+  ShieldCheck,
+  HelpCircle,
+  ExternalLink
 } from "lucide-react";
 import { Employee, SystemStats, RecentActivity, UserProfile, UserRole } from "../types";
 import { isSupabaseConfigured } from "../services/supabaseClient";
+import { dataService } from "../services/dataService";
 import { motion, AnimatePresence } from "motion/react";
 import ProfileModal from "./ProfileModal";
 
@@ -42,7 +45,7 @@ interface DashboardProps {
   currentUser: UserProfile;
   onNavigateToMap: () => void;
   onLogout: () => void;
-  onUpdateUser: (updated: UserProfile) => Promise<boolean>;
+  onUpdateUser: (updated: UserProfile) => Promise<boolean | { success: boolean; message?: string }>;
   onOpenHelmetModal: () => void;
   onOpenEmployeeModal: () => void;
   onOpenUserModal: () => void;
@@ -69,6 +72,23 @@ export default function Dashboard({
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
+  const [faqFormsUrl, setFaqFormsUrl] = useState<string>("");
+
+  useEffect(() => {
+    // Carrega a URL inicial do formulário de FAQ
+    dataService.getAppSetting("faq_forms_url").then((url) => {
+      if (url) setFaqFormsUrl(url);
+    });
+
+    // Escuta atualizações bidirecionais em tempo real (Supabase Realtime)
+    const unsubscribe = dataService.subscribeToRealtime((table, _event, record) => {
+      if (table === "app_settings" && record?.key === "faq_forms_url") {
+        setFaqFormsUrl(record.value || "");
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   // Capacete conectado principal (EMP001 vinculado ao ESP32)
   const connectedHelmet = employees.find(e => e.id === "EMP001" && e.status !== "OFFLINE") || employees.find(e => e.status !== "OFFLINE") || null;
@@ -130,18 +150,20 @@ export default function Dashboard({
           {/* Role Badge */}
           {getRoleBadge()}
 
-          {/* Supabase Status Indicator */}
-          <span 
-            className={`hidden lg:flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-mono font-semibold border ${
-              isSupabase 
-                ? "bg-green-500/10 text-green-400 border-green-500/30" 
-                : "bg-amber-500/10 text-amber-400 border-amber-500/30"
-            }`}
-            title={isSupabase ? "Conectado ao Supabase PostgreSQL Cloud" : "Operando em modo de Armazenamento Local Inteligente (LocalStorage)"}
-          >
-            <Database className="w-3 h-3" />
-            {isSupabase ? "Supabase Nuvem" : "Modo Local Resiliente"}
-          </span>
+          {/* Supabase Status Indicator (Exclusivo para Admin Master) */}
+          {effectiveRole === "MASTER" && (
+            <span 
+              className={`hidden lg:flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-mono font-semibold border ${
+                isSupabase 
+                  ? "bg-green-500/10 text-green-400 border-green-500/30" 
+                  : "bg-amber-500/10 text-amber-400 border-amber-500/30"
+              }`}
+              title={isSupabase ? "Conectado ao Supabase PostgreSQL Cloud" : "Operando em modo de Armazenamento Local Inteligente (LocalStorage)"}
+            >
+              <Database className="w-3 h-3" />
+              {isSupabase ? "Supabase Nuvem" : "Modo Local Resiliente"}
+            </span>
+          )}
         </div>
 
         {/* Central Navigation Action Shortcuts - Desktop */}
@@ -314,7 +336,9 @@ export default function Dashboard({
                         className="w-full flex items-center gap-3 p-2.5 rounded-xl text-xs text-zinc-300 hover:text-white hover:bg-white/5 transition-colors text-left"
                       >
                         <FileCheck2 className="w-4 h-4 text-yellow-500" />
-                        <span className="font-bold uppercase tracking-wider text-[10px]">Normas & Laudos TCC</span>
+                        <span className="font-bold uppercase tracking-wider text-[10px]">
+                          {effectiveRole === "MASTER" ? "Normas & Laudos TCC" : "Normas & Laudos Técnicos"}
+                        </span>
                       </button>
                     </div>
 
@@ -496,7 +520,9 @@ export default function Dashboard({
               {/* Força G Atual */}
               <div className="bg-zinc-950/70 p-4 rounded-xl border border-white/5">
                 <div className="flex justify-between items-start mb-2">
-                  <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Aceleração (MPU6050)</span>
+                  <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">
+                    {effectiveRole === "MASTER" ? "Aceleração (MPU6050)" : "Aceleração Cinemática"}
+                  </span>
                   <Gauge className="w-4 h-4 text-yellow-500" />
                 </div>
                 <div className="text-3xl font-bold text-white font-mono">
@@ -531,9 +557,13 @@ export default function Dashboard({
 
               {/* Sensores SW-420 e FC-04 */}
               <div className="bg-zinc-950/70 p-4 rounded-xl border border-white/5 space-y-2.5">
-                <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest block">Módulos de Detecção</span>
+                <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest block">
+                  {effectiveRole === "MASTER" ? "Módulos de Detecção (Hardware)" : "Sensores de Proteção"}
+                </span>
                 <div className="flex justify-between items-center text-xs">
-                  <span className="text-zinc-400">Vibração (SW-420):</span>
+                  <span className="text-zinc-400">
+                    {effectiveRole === "MASTER" ? "Vibração (SW-420):" : "Sensor de Vibração:"}
+                  </span>
                   <span className={`font-bold px-2 py-0.5 rounded text-[10px] uppercase ${
                     telemetry?.vibracao ? "bg-red-500/20 text-red-400 border border-red-500/30" : "bg-zinc-800 text-zinc-400"
                   }`}>
@@ -541,7 +571,9 @@ export default function Dashboard({
                   </span>
                 </div>
                 <div className="flex justify-between items-center text-xs">
-                  <span className="text-zinc-400">Ruído/Som (FC-04):</span>
+                  <span className="text-zinc-400">
+                    {effectiveRole === "MASTER" ? "Ruído/Som (FC-04):" : "Sensor Acústico:"}
+                  </span>
                   <span className={`font-bold px-2 py-0.5 rounded text-[10px] uppercase ${
                     telemetry?.som ? "bg-blue-500/20 text-blue-400 border border-blue-500/30" : "bg-zinc-800 text-zinc-400"
                   }`}>
@@ -553,7 +585,9 @@ export default function Dashboard({
               {/* GPS NEO-6M & Satélites */}
               <div className="bg-zinc-950/70 p-4 rounded-xl border border-white/5">
                 <div className="flex justify-between items-start mb-2">
-                  <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">GPS (NEO-6M)</span>
+                  <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">
+                    {effectiveRole === "MASTER" ? "GPS (NEO-6M)" : "Geolocalização / GPS"}
+                  </span>
                   <MapPin className="w-4 h-4 text-yellow-500" />
                 </div>
                 <div className="text-xs space-y-1 mt-1">
@@ -566,7 +600,7 @@ export default function Dashboard({
                   <div className="flex justify-between text-zinc-400">
                     <span>Coordenadas:</span>
                     <span className="font-mono text-[11px] text-zinc-200">
-                      {connectedHelmet?.lat.toFixed(4)}, {connectedHelmet?.lng.toFixed(4)}
+                      {connectedHelmet != null ? `${connectedHelmet.lat.toFixed(4)}, ${connectedHelmet.lng.toFixed(4)}` : "-- , --"}
                     </span>
                   </div>
                   <div className="flex justify-between text-zinc-400">
@@ -684,7 +718,9 @@ export default function Dashboard({
                   <span className="text-xs font-bold text-white uppercase tracking-wider block group-hover:text-green-300 transition-colors">
                     Normas & Laudos
                   </span>
-                  <span className="text-[10px] text-zinc-500">NR-06, NR-12 & TCC</span>
+                  <span className="text-[10px] text-zinc-500">
+                    {effectiveRole === "MASTER" ? "NR-06, NR-12 & TCC" : "NR-06 & NR-12"}
+                  </span>
                 </div>
               </button>
             </div>
@@ -720,6 +756,30 @@ export default function Dashboard({
                 <FileCheck2 className="w-3.5 h-3.5 text-green-400" />
                 <span>Normas NR-06 & NR-12</span>
               </button>
+
+              {faqFormsUrl ? (
+                <a
+                  href={faqFormsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="hover:text-yellow-400 underline underline-offset-4 transition-colors flex items-center gap-1 text-zinc-300 hover:text-white"
+                  title="Central de Ajuda e Formulário de FAQ"
+                >
+                  <HelpCircle className="w-3.5 h-3.5 text-yellow-400" />
+                  <span>Ajuda / FAQ</span>
+                  <ExternalLink className="w-3 h-3 text-zinc-400" />
+                </a>
+              ) : effectiveRole === "MASTER" ? (
+                <button
+                  onClick={onOpenUserModal}
+                  className="hover:text-yellow-400 underline underline-offset-4 transition-colors flex items-center gap-1 text-amber-400/90 group"
+                  title="Configure a URL do Google Forms nas configurações do sistema"
+                >
+                  <HelpCircle className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Ajuda / FAQ</span>
+                  <Settings className="w-3 h-3 text-amber-400/70 group-hover:rotate-45 transition-transform" />
+                </button>
+              ) : null}
             </div>
           </div>
         </footer>
@@ -774,6 +834,33 @@ export default function Dashboard({
                 <FileCheck2 className="w-4 h-4 text-yellow-500" />
                 <span>Normas NR-06 & NR-12</span>
               </button>
+
+              {faqFormsUrl ? (
+                <a
+                  href={faqFormsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => setShowMobileMenu(false)}
+                  className="w-full flex items-center justify-between p-3 rounded-xl bg-zinc-950 border border-white/5 text-xs text-white font-semibold"
+                >
+                  <div className="flex items-center gap-3">
+                    <HelpCircle className="w-4 h-4 text-yellow-500" />
+                    <span>Ajuda / FAQ</span>
+                  </div>
+                  <ExternalLink className="w-3.5 h-3.5 text-zinc-400" />
+                </a>
+              ) : effectiveRole === "MASTER" ? (
+                <button
+                  onClick={() => { setShowMobileMenu(false); onOpenUserModal(); }}
+                  className="w-full flex items-center justify-between p-3 rounded-xl bg-zinc-950 border border-white/5 text-xs text-amber-400 font-semibold"
+                >
+                  <div className="flex items-center gap-3">
+                    <HelpCircle className="w-4 h-4 text-amber-400" />
+                    <span>Ajuda / FAQ (Configurar URL)</span>
+                  </div>
+                  <Settings className="w-3.5 h-3.5 text-amber-400" />
+                </button>
+              ) : null}
 
               <button
                 onClick={() => { setShowMobileMenu(false); onNavigateToMap(); }}

@@ -6,7 +6,8 @@ import {
   SafetyGuideline, 
   AccidentEvent,
   UserProfile,
-  UserRole
+  UserRole,
+  AppSetting
 } from "../types";
 import { 
   hashPassword, 
@@ -19,8 +20,30 @@ import {
 
 // Tipos para comunicação bidirecional de eventos Supabase Realtime
 export type RealtimeChangeType = "INSERT" | "UPDATE" | "DELETE";
-export type RealtimeTableType = "users" | "employees" | "helmets" | "accident_events" | "safety_guidelines";
+export type RealtimeTableType = "users" | "employees" | "helmets" | "accident_events" | "safety_guidelines" | "app_settings";
 export type RealtimeListener = (table: RealtimeTableType, event: RealtimeChangeType, record: any) => void;
+
+export interface MutationResult<T = any> {
+  success: boolean;
+  message: string;
+  data?: T;
+}
+
+export function safeIsoDate(val?: string | null): string | null {
+  if (!val || typeof val !== "string" || val.trim() === "") return null;
+  const trimmed = val.trim();
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(trimmed)) {
+    const [d, m, y] = trimmed.split("/");
+    const parsed = new Date(`${y}-${m}-${d}T00:00:00.000Z`);
+    return isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const parsed = new Date(`${trimmed}T00:00:00.000Z`);
+    return isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  }
+  const parsed = new Date(trimmed);
+  return isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
 
 // ============================================================
 // DADOS INICIAIS RESILIENTES (LOCALSTORAGE / FALLBACK)
@@ -314,6 +337,7 @@ function initLocalStorage() {
   if (!localStorage.getItem("ism_employees")) saveToStorage("ism_employees", SEED_EMPLOYEES);
   if (!localStorage.getItem("ism_guidelines")) saveToStorage("ism_guidelines", SEED_GUIDELINES);
   if (!localStorage.getItem("ism_accidents")) saveToStorage("ism_accidents", SEED_ACCIDENTS);
+  if (!localStorage.getItem("ism_app_settings")) saveToStorage("ism_app_settings", { faq_forms_url: "" });
 }
 
 // ============================================================
@@ -540,12 +564,219 @@ if (supabase) {
           notifyRealtimeListeners("accident_events", "INSERT", mapped);
         }
       )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "app_settings" },
+        (payload) => {
+          console.log("[Supabase Realtime] Alteração na tabela app_settings detectada na raiz:", payload);
+          const localSettings = getFromStorage<Record<string, string>>("ism_app_settings", { faq_forms_url: "" });
+
+          if (payload.eventType === "INSERT" || payload.eventType === "UPDATE") {
+            const item = payload.new as any;
+            if (item && item.key) {
+              localSettings[item.key] = item.value ?? "";
+              saveToStorage("ism_app_settings", localSettings);
+              notifyRealtimeListeners("app_settings", payload.eventType, {
+                key: item.key,
+                value: item.value ?? "",
+                description: item.description,
+                updatedBy: item.updated_by,
+                updatedAt: item.updated_at
+              });
+            }
+          } else if (payload.eventType === "DELETE") {
+            const old = payload.old as any;
+            if (old && old.key) {
+              delete localSettings[old.key];
+              saveToStorage("ism_app_settings", localSettings);
+              notifyRealtimeListeners("app_settings", "DELETE", old);
+            }
+          }
+        }
+      )
       .subscribe((status) => {
         console.log(`[Supabase Realtime] Conexão bidirecional ativa: status = ${status}`);
       });
   } catch (err) {
     console.warn("[Supabase Realtime] Não foi possível assinar canal em tempo real:", err);
   }
+}
+
+// ============================================================
+// CICLO DE SINCRONIZAÇÃO ATIVA BIDIRECIONAL (SMART HEARTBEAT SYNC)
+// Detecta cadastros e edições feitas diretamente no Supabase (Table Editor / SQL)
+// ============================================================
+let isSyncRunning = false;
+
+async function runBidirectionalHeartbeatSync() {
+  if (!supabase || isSyncRunning) return;
+  if (typeof document !== "undefined" && document.hidden) return;
+
+  isSyncRunning = true;
+  try {
+    // 1. Sincronizar Usuários
+    const { data: dbUsers, error: uErr } = await supabase.from("users").select("*");
+    if (!uErr && dbUsers) {
+      const currentLocalUsers = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
+      let usersChanged = false;
+      const mapped: UserRecord[] = dbUsers.map(u => ({
+        id: u.id,
+        firstName: u.first_name || "",
+        lastName: u.last_name || "",
+        username: u.username,
+        role: (u.role as UserRole) || "VIEWER",
+        cpf: u.cpf || "",
+        position: u.position || "",
+        department: u.department || "",
+        email: u.email || "",
+        phone: u.phone || "",
+        active: u.active ?? true,
+        companyId: u.company_id,
+        createdAt: u.created_at
+      }));
+
+      for (const m of mapped) {
+        const found = currentLocalUsers.find(x => x.username === m.username || (x.id && x.id === m.id));
+        if (!found) {
+          usersChanged = true;
+          notifyRealtimeListeners("users", "INSERT", m);
+        } else if (
+          found.firstName !== m.firstName ||
+          found.lastName !== m.lastName ||
+          found.role !== m.role ||
+          found.email !== m.email ||
+          found.phone !== m.phone ||
+          found.department !== m.department ||
+          found.position !== m.position ||
+          found.active !== m.active
+        ) {
+          usersChanged = true;
+          notifyRealtimeListeners("users", "UPDATE", m);
+        }
+      }
+      for (const loc of currentLocalUsers) {
+        if (!mapped.some(m => m.username === loc.username || (m.id && m.id === loc.id))) {
+          usersChanged = true;
+          notifyRealtimeListeners("users", "DELETE", loc);
+        }
+      }
+      if (usersChanged) {
+        saveToStorage("ism_users", mapped);
+      }
+    }
+
+    // 2. Sincronizar Capacetes
+    const { data: dbHelmets, error: hErr } = await supabase.from("helmets").select("*");
+    if (!hErr && dbHelmets) {
+      const currentLocalHelmets = getFromStorage<Helmet[]>("ism_helmets", SEED_HELMETS);
+      let helmetsChanged = false;
+      const mappedH: Helmet[] = dbHelmets.map(h => ({
+        id: h.id,
+        serialNumber: h.serial_number,
+        macAddress: h.mac_address,
+        firmwareVersion: h.firmware_version,
+        battery: h.battery,
+        status: h.status,
+        lastCalibration: h.last_calibration ? h.last_calibration.split("T")[0] : undefined,
+        nextInspection: h.next_inspection ? h.next_inspection.split("T")[0] : undefined,
+        assignedEmployeeId: h.assigned_employee_id,
+        companyId: h.company_id
+      }));
+
+      for (const mh of mappedH) {
+        const foundH = currentLocalHelmets.find(x => x.id === mh.id);
+        if (!foundH) {
+          helmetsChanged = true;
+          notifyRealtimeListeners("helmets", "INSERT", mh);
+        } else if (
+          foundH.battery !== mh.battery ||
+          foundH.status !== mh.status ||
+          foundH.assignedEmployeeId !== mh.assignedEmployeeId ||
+          foundH.serialNumber !== mh.serialNumber ||
+          foundH.firmwareVersion !== mh.firmwareVersion ||
+          foundH.macAddress !== mh.macAddress ||
+          foundH.lastCalibration !== mh.lastCalibration ||
+          foundH.nextInspection !== mh.nextInspection
+        ) {
+          helmetsChanged = true;
+          notifyRealtimeListeners("helmets", "UPDATE", mh);
+        }
+      }
+      for (const locH of currentLocalHelmets) {
+        if (!mappedH.some(m => m.id === locH.id)) {
+          helmetsChanged = true;
+          notifyRealtimeListeners("helmets", "DELETE", locH);
+        }
+      }
+      if (helmetsChanged) {
+        saveToStorage("ism_helmets", mappedH);
+      }
+    }
+
+    // 3. Sincronizar Funcionários
+    const { data: dbEmps, error: eErr } = await supabase.from("employees").select("*");
+    if (!eErr && dbEmps) {
+      const currentLocalEmps = getFromStorage<Employee[]>("ism_employees", SEED_EMPLOYEES);
+      let empsChanged = false;
+      const mappedE: Employee[] = dbEmps.map(e => ({
+        id: e.id,
+        name: e.name,
+        cpf: e.cpf,
+        matricula: e.matricula,
+        roleFunction: e.role_function,
+        department: e.department,
+        shift: e.shift,
+        emergencyContact: e.emergency_contact,
+        status: e.status,
+        lat: typeof e.lat === "number" ? e.lat : -23.5505,
+        lng: typeof e.lng === "number" ? e.lng : -46.6333,
+        lastSeen: Number(e.last_seen) || 0,
+        battery: typeof e.battery === "number" ? e.battery : 100,
+        assignedHelmetId: e.assigned_helmet_id
+      }));
+
+      for (const me of mappedE) {
+        const foundE = currentLocalEmps.find(x => x.id === me.id);
+        if (!foundE) {
+          empsChanged = true;
+          notifyRealtimeListeners("employees", "INSERT", me);
+        } else if (
+          foundE.status !== me.status ||
+          foundE.name !== me.name ||
+          foundE.assignedHelmetId !== me.assignedHelmetId ||
+          foundE.battery !== me.battery ||
+          foundE.department !== me.department ||
+          foundE.shift !== me.shift ||
+          foundE.roleFunction !== me.roleFunction
+        ) {
+          empsChanged = true;
+          notifyRealtimeListeners("employees", "UPDATE", me);
+        }
+      }
+      for (const locE of currentLocalEmps) {
+        if (!mappedE.some(m => m.id === locE.id)) {
+          empsChanged = true;
+          notifyRealtimeListeners("employees", "DELETE", locE);
+        }
+      }
+      if (empsChanged) {
+        saveToStorage("ism_employees", mappedE);
+      }
+    }
+  } catch (err) {
+    console.warn("[dataService] Heartbeat sync falhou:", err);
+  } finally {
+    isSyncRunning = false;
+  }
+}
+
+// Inicia batimento periódico e sincronização imediata ao reativar a aba
+if (typeof window !== "undefined") {
+  setInterval(runBidirectionalHeartbeatSync, 5000);
+  window.addEventListener("focus", () => runBidirectionalHeartbeatSync());
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) runBidirectionalHeartbeatSync();
+  });
 }
 
 // ============================================================
@@ -556,6 +787,11 @@ export const dataService = {
     return isSupabaseConfigured();
   },
 
+  // Força uma sincronização imediata bidirecional com o Supabase Cloud
+  async syncNow(): Promise<void> {
+    await runBidirectionalHeartbeatSync();
+  },
+
   // ------------------------------------------------------------
   // USUÁRIOS & AUTENTICAÇÃO (RBAC)
   // ------------------------------------------------------------
@@ -564,7 +800,7 @@ export const dataService = {
       try {
         const { data, error } = await supabase.from("users").select("*").order("created_at", { ascending: true });
         if (!error && data && data.length > 0) {
-          return data.map(u => ({
+          const mappedUsers: UserRecord[] = data.map(u => ({
             id: u.id,
             firstName: u.first_name,
             lastName: u.last_name,
@@ -579,6 +815,8 @@ export const dataService = {
             companyId: u.company_id,
             createdAt: u.created_at
           }));
+          saveToStorage("ism_users", mappedUsers);
+          return mappedUsers;
         }
       } catch (err) {
         console.warn("[dataService] Falha ao buscar usuários do Supabase, utilizando cache local:", err);
@@ -721,27 +959,30 @@ export const dataService = {
     return { success: false, message: "Usuário ou senha incorretos." };
   },
 
-  async saveUser(user: Partial<UserRecord>, actor: string = "system"): Promise<boolean> {
+  async saveUser(user: Partial<UserRecord>, actor: string = "system"): Promise<MutationResult<UserRecord>> {
     const localUsers = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
     let updatedUsers: UserRecord[];
 
     // Garante hash criptográfico seguro na senha antes de salvar
     let securePassword = user.password;
-    if (securePassword) {
+    if (securePassword && !securePassword.startsWith("$ism_sha256$")) {
       securePassword = await hashPassword(securePassword);
     }
 
     const existingIndex = localUsers.findIndex(u => (user.id && u.id === user.id) || u.username === user.username);
+    let savedRecord: UserRecord;
+
     if (existingIndex >= 0) {
-      updatedUsers = [...localUsers];
-      updatedUsers[existingIndex] = { 
-        ...updatedUsers[existingIndex], 
+      savedRecord = { 
+        ...localUsers[existingIndex], 
         ...user,
-        password: securePassword || updatedUsers[existingIndex].password
+        password: securePassword || localUsers[existingIndex].password
       } as UserRecord;
-      await this.recordAudit("ROLE_CHANGED", actor, user.username, `Alterado perfil para ${user.role || updatedUsers[existingIndex].role}`);
+      updatedUsers = [...localUsers];
+      updatedUsers[existingIndex] = savedRecord;
+      await this.recordAudit("ROLE_CHANGED", actor, user.username, `Alterado perfil para ${user.role || savedRecord.role}`);
     } else {
-      const newUser: UserRecord = {
+      savedRecord = {
         id: user.id || `USR-${Date.now()}`,
         firstName: user.firstName || "Novo",
         lastName: user.lastName || "Usuário",
@@ -754,67 +995,131 @@ export const dataService = {
         email: user.email || "",
         phone: user.phone || "",
         active: user.active ?? true,
+        companyId: user.companyId || "COMP-001",
         createdAt: Date.now()
       };
-      updatedUsers = [newUser, ...localUsers];
-      await this.recordAudit("USER_CREATED", actor, newUser.username, `Novo usuário criado com papel ${newUser.role}`);
+      updatedUsers = [savedRecord, ...localUsers];
+      await this.recordAudit("USER_CREATED", actor, savedRecord.username, `Novo usuário criado com papel ${savedRecord.role}`);
     }
 
-    saveToStorage("ism_users", updatedUsers);
-
-    // Salvar no Supabase se disponível
+    // Persistir no Supabase se disponível
     if (supabase) {
       try {
-        const payload: any = {
-          id: user.id || `USR-${Date.now()}`,
-          first_name: user.firstName,
-          last_name: user.lastName,
-          username: user.username,
-          role: user.role,
-          cpf: user.cpf,
-          position: user.position,
-          department: user.department,
-          email: user.email,
-          phone: user.phone,
-          active: user.active ?? true
-        };
-        if (securePassword) {
-          payload.password = securePassword;
+        const usernameToMatch = user.username || savedRecord.username;
+        // 1. Verificar se o registro já existe no Supabase por username
+        const { data: dbExisting, error: checkErr } = await supabase
+          .from("users")
+          .select("id, username")
+          .eq("username", usernameToMatch)
+          .maybeSingle();
+
+        if (checkErr) {
+          console.error("[dataService] Erro ao verificar usuário no Supabase:", checkErr);
+          return { success: false, message: `Erro ao consultar Supabase: ${checkErr.message}` };
         }
-        await supabase.from("users").upsert(payload);
-      } catch (e) {
-        console.error("[dataService] Erro ao sincronizar usuário com Supabase:", e);
+
+        if (dbExisting) {
+          // Atualização de usuário existente: enviamos apenas campos alterados/válidos
+          const updatePayload: any = {
+            first_name: user.firstName !== undefined ? user.firstName : savedRecord.firstName,
+            last_name: user.lastName !== undefined ? user.lastName : savedRecord.lastName,
+            cpf: user.cpf !== undefined ? user.cpf : savedRecord.cpf,
+            position: user.position !== undefined ? user.position : savedRecord.position,
+            department: user.department !== undefined ? user.department : savedRecord.department,
+            email: user.email !== undefined ? user.email : savedRecord.email,
+            phone: user.phone !== undefined ? user.phone : savedRecord.phone,
+            active: user.active !== undefined ? user.active : savedRecord.active
+          };
+          if (user.role) updatePayload.role = user.role;
+          if (user.companyId) updatePayload.company_id = user.companyId;
+          if (securePassword) {
+            updatePayload.password = securePassword;
+            updatePayload.last_password_change = new Date().toISOString();
+          }
+
+          const { error: updateErr } = await supabase
+            .from("users")
+            .update(updatePayload)
+            .eq("username", usernameToMatch);
+
+          if (updateErr) {
+            console.error("[dataService] Falha ao atualizar usuário no Supabase:", updateErr);
+            return { success: false, message: `Erro ao atualizar usuário no Supabase: ${updateErr.message}` };
+          }
+        } else {
+          // Inserção de novo usuário
+          const insertPayload: any = {
+            id: savedRecord.id,
+            username: savedRecord.username,
+            password: savedRecord.password,
+            role: savedRecord.role,
+            first_name: savedRecord.firstName,
+            last_name: savedRecord.lastName,
+            cpf: savedRecord.cpf || null,
+            position: savedRecord.position || null,
+            department: savedRecord.department || null,
+            email: savedRecord.email || null,
+            phone: savedRecord.phone || null,
+            active: savedRecord.active,
+            company_id: savedRecord.companyId || "COMP-001"
+          };
+
+          const { error: insertErr } = await supabase
+            .from("users")
+            .insert(insertPayload);
+
+          if (insertErr) {
+            console.error("[dataService] Falha ao criar usuário no Supabase:", insertErr);
+            return { success: false, message: `Erro ao cadastrar usuário no Supabase: ${insertErr.message}` };
+          }
+        }
+      } catch (err: any) {
+        console.error("[dataService] Exceção ao gravar usuário no Supabase:", err);
+        return { success: false, message: `Falha de conexão com Supabase: ${err?.message || err}` };
       }
     }
 
-    return true;
+    saveToStorage("ism_users", updatedUsers);
+    notifyRealtimeListeners("users", existingIndex >= 0 ? "UPDATE" : "INSERT", savedRecord);
+
+    return { 
+      success: true, 
+      message: existingIndex >= 0 ? "Usuário atualizado com sucesso no Supabase!" : "Novo usuário cadastrado com sucesso no Supabase!", 
+      data: savedRecord 
+    };
   },
 
-  async toggleUserStatus(username: string, actor: string = "system"): Promise<boolean> {
+  async toggleUserStatus(username: string, actor: string = "system"): Promise<MutationResult<boolean>> {
     const users = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
     const target = users.find(u => u.username === username);
-    if (!target) return false;
+    if (!target) return { success: false, message: "Usuário não encontrado." };
     target.active = !target.active;
-    saveToStorage("ism_users", users);
 
+    if (supabase) {
+      try {
+        const { error } = await supabase.from("users").update({ active: target.active }).eq("username", username);
+        if (error) {
+          console.error("[dataService] Erro ao atualizar status no Supabase:", error);
+          return { success: false, message: `Erro ao atualizar status no Supabase: ${error.message}` };
+        }
+      } catch (e: any) {
+        console.error("[dataService] Exceção ao atualizar status no Supabase:", e);
+        return { success: false, message: `Falha de conexão ao atualizar status: ${e?.message || e}` };
+      }
+    }
+
+    saveToStorage("ism_users", users);
     await this.recordAudit(
       target.active ? "ROLE_CHANGED" : "USER_DISABLED",
       actor,
       username,
       `Status do usuário alterado para ${target.active ? "ATIVO" : "INATIVO"}`
     );
-
-    if (supabase) {
-      try {
-        await supabase.from("users").update({ active: target.active }).eq("username", username);
-      } catch (e) {
-        console.error("[dataService] Erro ao atualizar status no Supabase:", e);
-      }
-    }
-    return true;
+    notifyRealtimeListeners("users", "UPDATE", target);
+    return { success: true, message: `Status alterado para ${target.active ? "ATIVO" : "INATIVO"} com sucesso!`, data: target.active };
   },
 
-  async deleteUser(username: string, actor: string = "system"): Promise<boolean> {
+  async deleteUser(username: string, actor: string = "system"): Promise<MutationResult<null>> {
     let users = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
     users = users.filter(u => u.username !== username);
     saveToStorage("ism_users", users);
@@ -823,12 +1128,18 @@ export const dataService = {
 
     if (supabase) {
       try {
-        await supabase.from("users").delete().eq("username", username);
-      } catch (e) {
-        console.error("[dataService] Erro ao excluir usuário no Supabase:", e);
+        const { error } = await supabase.from("users").delete().eq("username", username);
+        if (error) {
+          console.error("[dataService] Erro ao excluir usuário no Supabase:", error);
+          return { success: false, message: `Erro ao excluir usuário no Supabase: ${error.message}` };
+        }
+      } catch (e: any) {
+        console.error("[dataService] Exceção ao excluir usuário no Supabase:", e);
+        return { success: false, message: `Falha de conexão ao excluir no Supabase: ${e?.message || e}` };
       }
     }
-    return true;
+    notifyRealtimeListeners("users", "DELETE", { username });
+    return { success: true, message: `Usuário @${username} excluído com sucesso do Supabase!` };
   },
 
   // ------------------------------------------------------------
@@ -839,7 +1150,7 @@ export const dataService = {
       try {
         const { data, error } = await supabase.from("helmets").select("*").order("id", { ascending: true });
         if (!error && data && data.length > 0) {
-          return data.map(h => ({
+          const mappedHelmets: Helmet[] = data.map(h => ({
             id: h.id,
             serialNumber: h.serial_number,
             macAddress: h.mac_address,
@@ -851,6 +1162,8 @@ export const dataService = {
             assignedEmployeeId: h.assigned_employee_id,
             companyId: h.company_id
           }));
+          saveToStorage("ism_helmets", mappedHelmets);
+          return mappedHelmets;
         }
       } catch (e) {
         console.warn("[dataService] Erro ao buscar capacetes do Supabase:", e);
@@ -859,49 +1172,129 @@ export const dataService = {
     return getFromStorage<Helmet[]>("ism_helmets", SEED_HELMETS);
   },
 
-  async saveHelmet(helmet: Helmet): Promise<boolean> {
+  async saveHelmet(helmet: Helmet): Promise<MutationResult<Helmet>> {
     const helmets = getFromStorage<Helmet[]>("ism_helmets", SEED_HELMETS);
     const index = helmets.findIndex(h => h.id === helmet.id);
-    if (index >= 0) {
-      helmets[index] = helmet;
-    } else {
-      helmets.push(helmet);
-    }
-    saveToStorage("ism_helmets", helmets);
+    const sanitizedAssignedEmp = (helmet.assignedEmployeeId && helmet.assignedEmployeeId !== "none" && helmet.assignedEmployeeId.trim() !== "") 
+      ? helmet.assignedEmployeeId.trim() 
+      : null;
 
+    const cleanedHelmet: Helmet = {
+      ...helmet,
+      assignedEmployeeId: sanitizedAssignedEmp,
+      battery: Math.min(100, Math.max(0, Number(helmet.battery) || 0))
+    };
+
+    let updatedHelmets: Helmet[];
+    if (index >= 0) {
+      updatedHelmets = [...helmets];
+      updatedHelmets[index] = cleanedHelmet;
+    } else {
+      updatedHelmets = [...helmets, cleanedHelmet];
+    }
+
+    // Persistir no Supabase se ativo
     if (supabase) {
       try {
-        await supabase.from("helmets").upsert({
-          id: helmet.id,
-          serial_number: helmet.serialNumber,
-          mac_address: helmet.macAddress,
-          firmware_version: helmet.firmwareVersion,
-          battery: helmet.battery,
-          status: helmet.status,
-          last_calibration: helmet.lastCalibration ? new Date(helmet.lastCalibration).toISOString() : null,
-          next_inspection: helmet.nextInspection ? new Date(helmet.nextInspection).toISOString() : null,
-          assigned_employee_id: helmet.assignedEmployeeId
-        });
-      } catch (e) {
-        console.error("[dataService] Erro ao salvar capacete no Supabase:", e);
+        const payload = {
+          id: cleanedHelmet.id,
+          serial_number: cleanedHelmet.serialNumber,
+          mac_address: cleanedHelmet.macAddress || null,
+          firmware_version: cleanedHelmet.firmwareVersion || "v1.0.4",
+          battery: cleanedHelmet.battery,
+          status: cleanedHelmet.status,
+          last_calibration: safeIsoDate(cleanedHelmet.lastCalibration),
+          next_inspection: safeIsoDate(cleanedHelmet.nextInspection),
+          assigned_employee_id: cleanedHelmet.assignedEmployeeId,
+          company_id: cleanedHelmet.companyId || "COMP-001"
+        };
+
+        const { data: existingH, error: checkErr } = await supabase
+          .from("helmets")
+          .select("id")
+          .eq("id", cleanedHelmet.id)
+          .maybeSingle();
+
+        if (checkErr) {
+          console.error("[dataService] Erro ao consultar capacete no Supabase:", checkErr);
+          return { success: false, message: `Erro ao consultar capacete no Supabase: ${checkErr.message}` };
+        }
+
+        if (existingH) {
+          const { error: upErr } = await supabase
+            .from("helmets")
+            .update(payload)
+            .eq("id", cleanedHelmet.id);
+
+          if (upErr) {
+            console.error("[dataService] Erro ao atualizar capacete no Supabase:", upErr);
+            return { success: false, message: `Erro ao atualizar capacete no Supabase: ${upErr.message}` };
+          }
+        } else {
+          const { error: insErr } = await supabase
+            .from("helmets")
+            .insert(payload);
+
+          if (insErr) {
+            console.error("[dataService] Erro ao inserir capacete no Supabase:", insErr);
+            return { success: false, message: `Erro ao cadastrar capacete no Supabase: ${insErr.message}` };
+          }
+        }
+
+        // Sincronização Cruzada no Supabase com tabela employees:
+        if (cleanedHelmet.assignedEmployeeId) {
+          await supabase
+            .from("employees")
+            .update({ assigned_helmet_id: cleanedHelmet.id })
+            .eq("id", cleanedHelmet.assignedEmployeeId);
+
+          await supabase
+            .from("employees")
+            .update({ assigned_helmet_id: null })
+            .eq("assigned_helmet_id", cleanedHelmet.id)
+            .neq("id", cleanedHelmet.assignedEmployeeId);
+        } else {
+          await supabase
+            .from("employees")
+            .update({ assigned_helmet_id: null })
+            .eq("assigned_helmet_id", cleanedHelmet.id);
+        }
+      } catch (err: any) {
+        console.error("[dataService] Exceção ao salvar capacete no Supabase:", err);
+        return { success: false, message: `Falha de conexão com Supabase: ${err?.message || err}` };
       }
     }
-    return true;
+
+    saveToStorage("ism_helmets", updatedHelmets);
+    notifyRealtimeListeners("helmets", index >= 0 ? "UPDATE" : "INSERT", cleanedHelmet);
+
+    return { 
+      success: true, 
+      message: index >= 0 ? "Capacete atualizado com sucesso no Supabase!" : "Capacete cadastrado com sucesso no Supabase!", 
+      data: cleanedHelmet 
+    };
   },
 
-  async deleteHelmet(id: string): Promise<boolean> {
+  async deleteHelmet(id: string): Promise<MutationResult<null>> {
     let helmets = getFromStorage<Helmet[]>("ism_helmets", SEED_HELMETS);
     helmets = helmets.filter(h => h.id !== id);
     saveToStorage("ism_helmets", helmets);
 
     if (supabase) {
       try {
-        await supabase.from("helmets").delete().eq("id", id);
-      } catch (e) {
-        console.error("[dataService] Erro ao excluir capacete no Supabase:", e);
+        await supabase.from("employees").update({ assigned_helmet_id: null }).eq("assigned_helmet_id", id);
+        const { error } = await supabase.from("helmets").delete().eq("id", id);
+        if (error) {
+          console.error("[dataService] Erro ao excluir capacete no Supabase:", error);
+          return { success: false, message: `Erro ao excluir capacete no Supabase: ${error.message}` };
+        }
+      } catch (e: any) {
+        console.error("[dataService] Exceção ao excluir capacete no Supabase:", e);
+        return { success: false, message: `Falha de conexão ao excluir capacete: ${e?.message || e}` };
       }
     }
-    return true;
+    notifyRealtimeListeners("helmets", "DELETE", { id });
+    return { success: true, message: "Capacete excluído com sucesso do Supabase!" };
   },
 
   // ------------------------------------------------------------
@@ -912,7 +1305,7 @@ export const dataService = {
       try {
         const { data, error } = await supabase.from("employees").select("*").order("id", { ascending: true });
         if (!error && data && data.length > 0) {
-          return data.map(e => ({
+          const mappedEmployees: Employee[] = data.map(e => ({
             id: e.id,
             name: e.name,
             cpf: e.cpf,
@@ -922,12 +1315,14 @@ export const dataService = {
             shift: e.shift,
             emergencyContact: e.emergency_contact,
             status: e.status,
-            lat: e.lat,
-            lng: e.lng,
+            lat: typeof e.lat === "number" ? e.lat : -23.5505,
+            lng: typeof e.lng === "number" ? e.lng : -46.6333,
             lastSeen: Number(e.last_seen) || 0,
-            battery: e.battery,
+            battery: typeof e.battery === "number" ? e.battery : 100,
             assignedHelmetId: e.assigned_helmet_id
           }));
+          saveToStorage("ism_employees", mappedEmployees);
+          return mappedEmployees;
         }
       } catch (e) {
         console.warn("[dataService] Erro ao carregar funcionários do Supabase:", e);
@@ -936,66 +1331,133 @@ export const dataService = {
     return getFromStorage<Employee[]>("ism_employees", SEED_EMPLOYEES);
   },
 
-  async saveEmployee(employee: Employee): Promise<boolean> {
+  async saveEmployee(employee: Employee): Promise<MutationResult<Employee>> {
     const employees = getFromStorage<Employee[]>("ism_employees", SEED_EMPLOYEES);
     const index = employees.findIndex(e => e.id === employee.id);
+    const sanitizedHelmetId = (employee.assignedHelmetId && employee.assignedHelmetId !== "none" && employee.assignedHelmetId.trim() !== "") 
+      ? employee.assignedHelmetId.trim() 
+      : null;
+
+    const cleanedEmployee: Employee = {
+      ...employee,
+      assignedHelmetId: sanitizedHelmetId
+    };
+
+    let updatedEmployees: Employee[];
     if (index >= 0) {
-      employees[index] = { ...employees[index], ...employee };
+      updatedEmployees = [...employees];
+      updatedEmployees[index] = cleanedEmployee;
     } else {
-      employees.push(employee);
-    }
-    saveToStorage("ism_employees", employees);
-
-    // Se vinculou um capacete, atualizar o status do capacete para IN_USE
-    if (employee.assignedHelmetId) {
-      const helmets = getFromStorage<Helmet[]>("ism_helmets", SEED_HELMETS);
-      const hIndex = helmets.findIndex(h => h.id === employee.assignedHelmetId);
-      if (hIndex >= 0) {
-        helmets[hIndex].status = "IN_USE";
-        helmets[hIndex].assignedEmployeeId = employee.id;
-        helmets[hIndex].assignedEmployeeName = employee.name;
-        saveToStorage("ism_helmets", helmets);
-      }
+      updatedEmployees = [...employees, cleanedEmployee];
     }
 
+    // Persistir no Supabase se ativo
     if (supabase) {
       try {
-        await supabase.from("employees").upsert({
-          id: employee.id,
-          name: employee.name,
-          cpf: employee.cpf,
-          matricula: employee.matricula,
-          role_function: employee.roleFunction,
-          department: employee.department,
-          shift: employee.shift,
-          emergency_contact: employee.emergencyContact,
-          status: employee.status,
-          lat: employee.lat,
-          lng: employee.lng,
-          last_seen: employee.lastSeen,
-          battery: employee.battery,
-          assigned_helmet_id: employee.assignedHelmetId
-        });
-      } catch (e) {
-        console.error("[dataService] Erro ao salvar funcionário no Supabase:", e);
+        const payload = {
+          id: cleanedEmployee.id,
+          name: cleanedEmployee.name,
+          cpf: cleanedEmployee.cpf || null,
+          matricula: cleanedEmployee.matricula || null,
+          role_function: cleanedEmployee.roleFunction || null,
+          department: cleanedEmployee.department || null,
+          shift: cleanedEmployee.shift || null,
+          emergency_contact: cleanedEmployee.emergencyContact || null,
+          status: cleanedEmployee.status || "OFFLINE",
+          lat: typeof cleanedEmployee.lat === "number" ? cleanedEmployee.lat : -23.5505,
+          lng: typeof cleanedEmployee.lng === "number" ? cleanedEmployee.lng : -46.6333,
+          last_seen: cleanedEmployee.lastSeen || 0,
+          battery: typeof cleanedEmployee.battery === "number" ? cleanedEmployee.battery : 100,
+          assigned_helmet_id: cleanedEmployee.assignedHelmetId,
+          company_id: cleanedEmployee.companyId || "COMP-001"
+        };
+
+        const { data: existingE, error: checkErr } = await supabase
+          .from("employees")
+          .select("id")
+          .eq("id", cleanedEmployee.id)
+          .maybeSingle();
+
+        if (checkErr) {
+          console.error("[dataService] Erro ao consultar operador no Supabase:", checkErr);
+          return { success: false, message: `Erro ao consultar operador no Supabase: ${checkErr.message}` };
+        }
+
+        if (existingE) {
+          const { error: upErr } = await supabase
+            .from("employees")
+            .update(payload)
+            .eq("id", cleanedEmployee.id);
+
+          if (upErr) {
+            console.error("[dataService] Erro ao atualizar operador no Supabase:", upErr);
+            return { success: false, message: `Erro ao atualizar operador no Supabase: ${upErr.message}` };
+          }
+        } else {
+          const { error: insErr } = await supabase
+            .from("employees")
+            .insert(payload);
+
+          if (insErr) {
+            console.error("[dataService] Erro ao cadastrar operador no Supabase:", insErr);
+            return { success: false, message: `Erro ao cadastrar operador no Supabase: ${insErr.message}` };
+          }
+        }
+
+        // Sincronização Cruzada no Supabase com tabela helmets:
+        if (cleanedEmployee.assignedHelmetId) {
+          await supabase
+            .from("helmets")
+            .update({ status: "IN_USE", assigned_employee_id: cleanedEmployee.id })
+            .eq("id", cleanedEmployee.assignedHelmetId);
+
+          await supabase
+            .from("helmets")
+            .update({ status: "AVAILABLE", assigned_employee_id: null })
+            .eq("assigned_employee_id", cleanedEmployee.id)
+            .neq("id", cleanedEmployee.assignedHelmetId);
+        } else {
+          await supabase
+            .from("helmets")
+            .update({ status: "AVAILABLE", assigned_employee_id: null })
+            .eq("assigned_employee_id", cleanedEmployee.id);
+        }
+      } catch (err: any) {
+        console.error("[dataService] Exceção ao salvar operador no Supabase:", err);
+        return { success: false, message: `Falha de conexão com Supabase: ${err?.message || err}` };
       }
     }
-    return true;
+
+    saveToStorage("ism_employees", updatedEmployees);
+    notifyRealtimeListeners("employees", index >= 0 ? "UPDATE" : "INSERT", cleanedEmployee);
+
+    return { 
+      success: true, 
+      message: index >= 0 ? "Operador atualizado com sucesso no Supabase!" : "Operador cadastrado com sucesso no Supabase!", 
+      data: cleanedEmployee 
+    };
   },
 
-  async deleteEmployee(id: string): Promise<boolean> {
+  async deleteEmployee(id: string): Promise<MutationResult<null>> {
     let employees = getFromStorage<Employee[]>("ism_employees", SEED_EMPLOYEES);
     employees = employees.filter(e => e.id !== id);
     saveToStorage("ism_employees", employees);
 
     if (supabase) {
       try {
-        await supabase.from("employees").delete().eq("id", id);
-      } catch (e) {
-        console.error("[dataService] Erro ao excluir funcionário no Supabase:", e);
+        await supabase.from("helmets").update({ status: "AVAILABLE", assigned_employee_id: null }).eq("assigned_employee_id", id);
+        const { error } = await supabase.from("employees").delete().eq("id", id);
+        if (error) {
+          console.error("[dataService] Erro ao excluir funcionário no Supabase:", error);
+          return { success: false, message: `Erro ao excluir funcionário no Supabase: ${error.message}` };
+        }
+      } catch (e: any) {
+        console.error("[dataService] Exceção ao excluir funcionário no Supabase:", e);
+        return { success: false, message: `Falha de conexão ao excluir funcionário: ${e?.message || e}` };
       }
     }
-    return true;
+    notifyRealtimeListeners("employees", "DELETE", { id });
+    return { success: true, message: "Funcionário excluído com sucesso do Supabase!" };
   },
 
   // ------------------------------------------------------------
@@ -1360,5 +1822,99 @@ export const dataService = {
       console.error("[dataService] Erro ao validar código OTP:", err);
       return { success: false, message: "Erro ao processar a validação da senha." };
     }
+  },
+
+  // ------------------------------------------------------------
+  // CONFIGURAÇÕES GLOBAIS DA APLICAÇÃO (Admin Master / FAQ Forms)
+  // ------------------------------------------------------------
+  async getAppSetting(key: string, defaultValue: string = ""): Promise<string> {
+    // 1. Tentar ler do Supabase se ativo
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from("app_settings")
+          .select("value")
+          .eq("key", key)
+          .maybeSingle();
+
+        if (!error && data && typeof data.value === "string") {
+          const local = getFromStorage<Record<string, string>>("ism_app_settings", {});
+          local[key] = data.value;
+          saveToStorage("ism_app_settings", local);
+          return data.value;
+        }
+      } catch (err) {
+        console.warn(`[dataService] Falha ao ler configuração '${key}' do Supabase:`, err);
+      }
+    }
+
+    // 2. Tentar ler do backend local via API REST se estiver online
+    try {
+      const res = await fetch(`/api/settings/${encodeURIComponent(key)}`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json && json.success && typeof json.value === "string") {
+          const local = getFromStorage<Record<string, string>>("ism_app_settings", {});
+          local[key] = json.value;
+          saveToStorage("ism_app_settings", local);
+          return json.value;
+        }
+      }
+    } catch {
+      // Backend REST offline ou indisponível no momento
+    }
+
+    // 3. Fallback para LocalStorage resiliente
+    const local = getFromStorage<Record<string, string>>("ism_app_settings", {});
+    if (local && key in local && typeof local[key] === "string") {
+      return local[key];
+    }
+
+    return defaultValue;
+  },
+
+  async setAppSetting(key: string, value: string, updatedBy: string = "admin"): Promise<boolean> {
+    const trimmedValue = value.trim();
+    const nowIso = new Date().toISOString();
+
+    // 1. Atualizar LocalStorage imediatamente para feedback instantâneo
+    const local = getFromStorage<Record<string, string>>("ism_app_settings", {});
+    local[key] = trimmedValue;
+    saveToStorage("ism_app_settings", local);
+
+    // Dispara evento local para ouvintes da mesma aba/sessão
+    notifyRealtimeListeners("app_settings", "UPDATE", {
+      key,
+      value: trimmedValue,
+      updatedBy,
+      updatedAt: nowIso
+    });
+
+    // 2. Persistir no Supabase se ativo
+    if (supabase) {
+      try {
+        await supabase.from("app_settings").upsert({
+          key,
+          value: trimmedValue,
+          updated_by: updatedBy,
+          updated_at: nowIso
+        }, { onConflict: "key" });
+      } catch (err) {
+        console.warn(`[dataService] Falha ao sincronizar configuração '${key}' com Supabase:`, err);
+      }
+    }
+
+    // 3. Persistir via Backend REST se ativo
+    try {
+      await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, value: trimmedValue, updatedBy })
+      });
+    } catch (err) {
+      console.info("[dataService] Backend REST indisponível para salvar configuração, persistido local e/ou Supabase.");
+    }
+
+    return true;
   }
 };
