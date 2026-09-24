@@ -851,17 +851,17 @@ async function startServer() {
         timestamp: Date.now(),
         type: "CONNECT",
         employeeId: "EMP001",
-        employeeName: "Gabriel Ara├║jo"
+        employeeName: "Gabriel Araújo"
       });
       if (recentActivities.length > 20) recentActivities.pop();
     }
 
     console.log(`\n[ESP32] Pacote #${signalsReceivedToday} recebido em ${ultimaAtualizacao}:`);
     console.log(`  Wifi: ${dados.wifi} | IP: ${dados.ip || clientIp || "N/A"}`);
-    console.log(`  Acelera├º├úo: ${dados.aceleracaoG}g | Pico: ${dados.picoG}g | Pontua├º├úo: ${dados.pontuacao}`);
-    console.log(`  Impacto: ${dados.impacto} | GPS V├ílido: ${dados.gpsValido} (${dados.latitude}, ${dados.longitude})`);
+    console.log(`  Aceleração: ${dados.aceleracaoG}g | Pico: ${dados.picoG}g | Pontuação: ${dados.pontuacao}`);
+    console.log(`  Impacto: ${dados.impacto} | GPS Válido: ${dados.gpsValido} (${dados.latitude}, ${dados.longitude})`);
 
-    // Atualiza os dados do funcion├írio EMP001 (Gabriel Ara├║jo / Gbxm)
+    // Atualiza os dados do funcionário EMP001 (Gabriel Araújo / Gbxm)
     const empIndex = employees.findIndex(e => e.id === "EMP001");
     if (empIndex !== -1) {
       const currentEmp = employees[empIndex];
@@ -878,7 +878,7 @@ async function startServer() {
         newLng = lngVal;
       }
 
-      // Detec├º├úo de impacto real pelo firmware
+      // Detecção de impacto real pelo firmware
       const isImpact = dados.impacto === true || dados.impacto === "true" || (Number(dados.pontuacao) >= 60);
 
       let newStatus = currentEmp.status;
@@ -985,7 +985,7 @@ async function startServer() {
     if (!latestESP32Data) {
       return res.status(404).json({
         sucesso: false,
-        mensagem: "Ainda n├úo existem dados do ESP32."
+        mensagem: "Ainda não existem dados do ESP32."
       });
     }
     res.json(latestESP32Data);
@@ -1102,8 +1102,8 @@ async function startServer() {
           );
           recentActivities.unshift({
             id: `ign-${Date.now()}`,
-            title: "Emerg├¬ncia Reconhecida",
-            description: `Alerta do operador ${empId} desativado manualmente pelo usu├írio`,
+            title: "Emergência Reconhecida",
+            description: `Alerta do operador ${empId} desativado manualmente pelo usuário`,
             timestamp: Date.now(),
             type: "INFO",
             employeeId: empId
@@ -1147,7 +1147,7 @@ async function startServer() {
     });
   }
 
-  // Heartbeat loop: apenas monitora perda de sinal (sem movimenta├º├úo ou emerg├¬ncia aleat├│ria)
+  // Heartbeat loop: apenas monitora perda de sinal (sem movimentação ou emergência aleatória)
   setInterval(() => {
     let changed = false;
     const now = Date.now();
@@ -1156,7 +1156,7 @@ async function startServer() {
       const timeSinceLastSeen = now - emp.lastSeen;
       let newStatus = emp.status;
 
-      // Se n├úo estiver em emerg├¬ncia ativa, atualiza status por perda de conex├úo
+      // Se não estiver em emergência ativa, atualiza status por perda de conexão
       if (emp.status !== "EMERGENCY") {
         if (timeSinceLastSeen > 30000 && emp.status !== "OFFLINE") {
           newStatus = "OFFLINE";
