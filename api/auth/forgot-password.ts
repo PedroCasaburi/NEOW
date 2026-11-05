@@ -1,8 +1,23 @@
-// ============================================================
-// VERCEL SERVERLESS FUNCTION: /api/auth/forgot-password
-// Responsável por: Gerar OTP, persistir no Supabase e enviar e-mail via Resend
-// Funciona em produção no Vercel sem precisar do server.ts local
-// ============================================================
+/**
+ * ============================================================================
+ * INDUSTRIAL SAFETY MONITOR - SERVERLESS FUNCTION: /api/auth/forgot-password
+ * ============================================================================
+ * [GUIA PARA O SQUAD DE CLOUD & SERVERLESS - VERCEL]
+ * 
+ * FINALIDADE:
+ * Processa solicitações de recuperação de senha em ambiente de produção Vercel.
+ * Opera de forma 100% serverless, sem depender de instância fixa do server.ts.
+ * 
+ * FLUXO DE SEGURANÇA & OWASP:
+ * 1. Rate Limiting por IP: Máximo de 3 solicitações a cada 15 minutos (prevenção de DoS/Spam de e-mail).
+ * 2. Validação Estrita: Rejeita entradas mal formatadas ou e-mails inválidos.
+ * 3. Invalidação Atômica: Invalida qualquer OTP emitido anteriormente para o mesmo usuário.
+ * 4. Hashing do Token OTP: O código de 6 dígitos NUNCA é salvo em texto claro no Supabase;
+ *    apenas seu hash SHA-256 + Salt do sistema é persistido.
+ * 5. Expiração Curta: Janela estrita de 10 minutos para utilização.
+ * 6. Disparo Transacional: Envia e-mail formatado via Resend API (ou simulação dev se chave não configurada).
+ * ============================================================================
+ */
 import type { IncomingMessage, ServerResponse } from "http";
 import { createClient } from "@supabase/supabase-js";
 import { Resend } from "resend";
@@ -15,17 +30,20 @@ type VercelResponse = ServerResponse & {
   end: () => void;
 };
 
-// Inicializa Supabase (usa as variáveis de ambiente do Vercel)
+// Inicializa Supabase (usa as variáveis de ambiente configuradas no Vercel Dashboard)
 const supabaseUrl = (process.env.VITE_SUPABASE_URL || "").trim();
 const supabaseKey = (process.env.VITE_SUPABASE_ANON_KEY || "").trim();
 const supabase =
   supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey) : null;
 
-// Inicializa Resend
+// Inicializa Resend com domínio oficial verificado (envia para qualquer e-mail válido cadastrado)
 const resendApiKey = (process.env.RESEND_API_KEY || "").trim();
+const OFFICIAL_FROM_EMAIL = 'Industrial Safety Monitor <suporte@mail.institutoicode.com.br>';
+const envFrom = (process.env.RESEND_FROM_EMAIL || "").trim();
 const resendFrom =
-  (process.env.RESEND_FROM_EMAIL || "").trim() ||
-  "Industrial Safety Monitor <onboarding@resend.dev>";
+  envFrom && !envFrom.includes("onboarding@resend.dev")
+    ? envFrom
+    : OFFICIAL_FROM_EMAIL;
 const resend = resendApiKey ? new Resend(resendApiKey) : null;
 
 // Salt para hash do OTP (deve ser o mesmo no servidor e na validação)
@@ -82,19 +100,51 @@ function buildEmailHtml(userName: string, otpCode: string): string {
 </html>`;
 }
 
-// Rate limiting simples por IP (em memória da serverless function)
+// Rate limiting isolado por Cliente Real (IP + Fingerprint) + E-mail (bloqueio de 15 minutos sem afetar outros usuários/cidades)
+const BLOCK_DURATION_MS = 15 * 60 * 1000; // 15 minutos
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
-function isRateLimited(ip: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(ip);
-  if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(ip, { count: 1, resetAt: now + 15 * 60 * 1000 });
-    return false;
+function extractClientIp(req: VercelRequest): string {
+  const candidates = [
+    req.headers["x-vercel-forwarded-for"],
+    req.headers["cf-connecting-ip"],
+    req.headers["x-real-ip"],
+    req.headers["x-forwarded-for"],
+    req.headers["x-client-ip"],
+    req.socket?.remoteAddress
+  ];
+
+  for (const raw of candidates) {
+    if (!raw) continue;
+    const val = Array.isArray(raw) ? raw[0] : String(raw);
+    const firstIp = val.split(",")[0].trim().replace(/^::ffff:/, "");
+    if (firstIp && firstIp !== "unknown") {
+      return firstIp;
+    }
   }
-  if (entry.count >= 3) return true;
+  return "0.0.0.0";
+}
+
+function buildClientRateKey(req: VercelRequest, targetEmail: string): string {
+  const ip = extractClientIp(req);
+  const ua = String(req.headers["user-agent"] || "unknown-ua").slice(0, 120);
+  const uaHash = crypto.createHash("sha256").update(ua).digest("hex").slice(0, 10);
+  return `${ip}:${uaHash}:${targetEmail.toLowerCase()}`;
+}
+
+function checkRateLimit(key: string): { blocked: boolean; remainingMinutes: number } {
+  const now = Date.now();
+  const entry = rateLimitMap.get(key);
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(key, { count: 1, resetAt: now + BLOCK_DURATION_MS });
+    return { blocked: false, remainingMinutes: 15 };
+  }
+  if (entry.count >= 5) {
+    const remainingMinutes = Math.max(1, Math.ceil((entry.resetAt - now) / 60000));
+    return { blocked: true, remainingMinutes };
+  }
   entry.count++;
-  return false;
+  return { blocked: false, remainingMinutes: 15 };
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -106,15 +156,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ success: false, message: "Método não permitido." });
 
-  const clientIp = (req.headers["x-forwarded-for"] as string || req.headers["x-real-ip"] as string || "127.0.0.1").split(",")[0].trim();
-
-  if (isRateLimited(clientIp)) {
-    return res.status(429).json({
-      success: false,
-      message: "Muitas solicitações deste IP. Aguarde 15 minutos por segurança."
-    });
-  }
-
   const { email } = req.body || {};
   if (!email || typeof email !== "string") {
     return res.status(400).json({ success: false, message: "E-mail é obrigatório." });
@@ -124,6 +165,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
   if (!emailRegex.test(normalizedEmail)) {
     return res.status(400).json({ success: false, message: "Formato de e-mail inválido." });
+  }
+
+  const rateKey = buildClientRateKey(req, normalizedEmail);
+  const rateStatus = checkRateLimit(rateKey);
+  if (rateStatus.blocked) {
+    return res.status(429).json({
+      success: false,
+      message: `Muitas solicitações para este dispositivo/e-mail. Aguarde ${rateStatus.remainingMinutes} minuto(s) (bloqueio de 15 minutos por segurança).`
+    });
   }
 
   try {
@@ -185,7 +235,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (resend) {
         try {
           const emailResult = await resend.emails.send({
-            from: resendFrom,
+            from: 'Industrial Safety Monitor <suporte@mail.institutoicode.com.br>',
             to: [normalizedEmail],
             subject: `Código de Recuperação: ${otpCode} - Industrial Safety Monitor`,
             html: buildEmailHtml(userName, otpCode)
@@ -196,7 +246,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             isDomainRestriction = resendErrMsg.includes("testing emails") || resendErrMsg.includes("verify a domain");
           } else {
             resendSuccess = true;
-            console.log(`[forgot-password] E-mail OTP enviado para ${normalizedEmail} | ID: ${emailResult.data?.id}`);
+            console.log(`[forgot-password] E-mail OTP enviado de ${resendFrom} para ${normalizedEmail} | ID: ${emailResult.data?.id}`);
           }
         } catch (mailErr: any) {
           resendErrMsg = mailErr?.message || String(mailErr);

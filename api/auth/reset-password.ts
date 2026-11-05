@@ -1,8 +1,25 @@
-// ============================================================
-// VERCEL SERVERLESS FUNCTION: /api/auth/reset-password
-// Responsável por: Validar OTP (hash SHA-256), atualizar senha no Supabase
-// Funciona em produção no Vercel sem precisar do server.ts local
-// ============================================================
+/**
+ * ============================================================================
+ * INDUSTRIAL SAFETY MONITOR - SERVERLESS FUNCTION: /api/auth/reset-password
+ * ============================================================================
+ * [GUIA PARA O SQUAD DE CLOUD & SERVERLESS - VERCEL]
+ * 
+ * FINALIDADE:
+ * Validação segura de token OTP e redefinição de credenciais de acesso em ambiente serverless Vercel.
+ * 
+ * FLUXO DE SEGURANÇA & MITIGAÇÃO OWASP:
+ * 1. Proteção contra Ataques de Dicionário / Força Bruta:
+ *    - Limite estrito de 5 tentativas por código OTP emitido.
+ *    - Após a 5ª tentativa falha, o código é marcado como inválido/bloqueado.
+ *    - Rate Limiting por IP para impedir bombardeamento automatizado de payloads.
+ * 2. Validação Criptográfica:
+ *    - O código fornecido é transformado em SHA-256 com o Salt do sistema e comparado com o hash no Supabase.
+ * 3. Hashing da Nova Senha:
+ *    - A nova senha é convertida para hash SHA-256 salteado com prefixo "$ism_sha256$" antes do UPDATE no banco.
+ * 4. Revogação de Sessão (Token Version Invalidation):
+ *    - O campo `token_version` do usuário é incrementado (+1) para derrubar sessões prévias roubadas/antigas.
+ * ============================================================================
+ */
 import type { IncomingMessage, ServerResponse } from "http";
 import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
@@ -37,18 +54,51 @@ function hashPasswordServer(plainText: string): string {
   return `$ism_sha256$${hex}`;
 }
 
-// Rate limiting por IP
+// Rate limiting isolado por Cliente Real (IP + Fingerprint) + E-mail (bloqueio de 15 minutos sem afetar outros usuários/cidades)
+const BLOCK_DURATION_MS = 15 * 60 * 1000; // 15 minutos
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
-function isRateLimited(ip: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(ip);
-  if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(ip, { count: 1, resetAt: now + 15 * 60 * 1000 });
-    return false;
+
+function extractClientIp(req: VercelRequest): string {
+  const candidates = [
+    req.headers["x-vercel-forwarded-for"],
+    req.headers["cf-connecting-ip"],
+    req.headers["x-real-ip"],
+    req.headers["x-forwarded-for"],
+    req.headers["x-client-ip"],
+    req.socket?.remoteAddress
+  ];
+
+  for (const raw of candidates) {
+    if (!raw) continue;
+    const val = Array.isArray(raw) ? raw[0] : String(raw);
+    const firstIp = val.split(",")[0].trim().replace(/^::ffff:/, "");
+    if (firstIp && firstIp !== "unknown") {
+      return firstIp;
+    }
   }
-  if (entry.count >= 15) return true;
+  return "0.0.0.0";
+}
+
+function buildClientRateKey(req: VercelRequest, targetEmail: string): string {
+  const ip = extractClientIp(req);
+  const ua = String(req.headers["user-agent"] || "unknown-ua").slice(0, 120);
+  const uaHash = crypto.createHash("sha256").update(ua).digest("hex").slice(0, 10);
+  return `${ip}:${uaHash}:${targetEmail.toLowerCase()}`;
+}
+
+function checkRateLimit(key: string): { blocked: boolean; remainingMinutes: number } {
+  const now = Date.now();
+  const entry = rateLimitMap.get(key);
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(key, { count: 1, resetAt: now + BLOCK_DURATION_MS });
+    return { blocked: false, remainingMinutes: 15 };
+  }
+  if (entry.count >= 10) {
+    const remainingMinutes = Math.max(1, Math.ceil((entry.resetAt - now) / 60000));
+    return { blocked: true, remainingMinutes };
+  }
   entry.count++;
-  return false;
+  return { blocked: false, remainingMinutes: 15 };
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -60,21 +110,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST")
     return res.status(405).json({ success: false, message: "Método não permitido." });
 
-  const clientIp = (
-    (req.headers["x-forwarded-for"] as string) ||
-    (req.headers["x-real-ip"] as string) ||
-    "127.0.0.1"
-  )
-    .split(",")[0]
-    .trim();
-
-  if (isRateLimited(clientIp)) {
-    return res.status(429).json({
-      success: false,
-      message: "Muitas tentativas. Aguarde alguns minutos."
-    });
-  }
-
+  const clientIp = extractClientIp(req);
   const { email, code, newPassword } = req.body || {};
 
   if (!email || !code || !newPassword) {
@@ -84,7 +120,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
-  const normalizedEmail = email.trim().toLowerCase();
+  const normalizedEmail = String(email).trim().toLowerCase();
+  const rateKey = buildClientRateKey(req, normalizedEmail);
+  const rateStatus = checkRateLimit(rateKey);
+  if (rateStatus.blocked) {
+    return res.status(429).json({
+      success: false,
+      message: `Muitas tentativas para este dispositivo/conta. Aguarde ${rateStatus.remainingMinutes} minuto(s) (bloqueio de 15 minutos).`
+    });
+  }
   const cleanCode = String(code).trim();
 
   if (!/^\d{6}$/.test(cleanCode)) {

@@ -152,54 +152,31 @@ CREATE POLICY "Allow public access to accident_events" ON accident_events FOR AL
 CREATE POLICY "Allow public access to safety_guidelines" ON safety_guidelines FOR ALL USING (true) WITH CHECK (true);
 
 -- ============================================================
--- DADOS INICIAIS (SEED DATA)
+-- CONTROLE DE INTEGRIDADE RBAC E SESSÃO (SEM SEED DATA FICTÍCIO)
 -- ============================================================
+-- Nota Arquitetural: Os dados fictícios de inicialização (SEED DATA de usuários,
+-- capacetes, operadores e acidentes) foram removidos para garantir que o banco
+-- reflita exclusivamente os dados reais de produção e telemetria IoT.
 
--- Empresa Modelo
-INSERT INTO companies (id, name, cnpj)
-VALUES ('COMP-001', 'Indústria Segura do Brasil S.A.', '12.345.678/0001-90')
-ON CONFLICT (id) DO NOTHING;
+-- Trigger automática no PostgreSQL para incrementar token_version ao alterar senha, perfil RBAC ou desativar conta
+CREATE OR REPLACE FUNCTION trg_users_security_token_bump()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF (OLD.password IS DISTINCT FROM NEW.password) THEN
+        NEW.token_version := COALESCE(OLD.token_version, 1) + 1;
+        NEW.last_password_change := NOW();
+    ELSIF (OLD.active IS DISTINCT FROM NEW.active AND NEW.active = FALSE) THEN
+        NEW.token_version := COALESCE(OLD.token_version, 1) + 1;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 
--- Usuários Padrão para Demonstração da Banca do TCC
-INSERT INTO users (id, username, password, role, first_name, last_name, cpf, position, department, email, phone, company_id, active)
-VALUES 
-('USR-001', 'adminmaster', '123456', 'MASTER', 'Administrador', 'Master', '000.111.222-33', 'Engenheiro Chefe de Sistemas / Dono', 'Diretoria de Tecnologia & Inovação', 'adminmaster@industrial.com', '(11) 99999-0000', 'COMP-001', true),
-('USR-002', 'Gbxm', '123456', 'COMPANY_ADMIN', 'Gabriel', 'Araújo', '123.456.789-00', 'Engenheiro de Segurança / Admin COI', 'Centro de Operações Industriais (COI)', 'gbxm.seguranca@industrial.com', '(11) 98765-4321', 'COMP-001', true),
-('USR-003', 'visualizador', '123456', 'VIEWER', 'Auditor', 'Visualizador', '999.888.777-66', 'Técnico de Monitoramento / Fiscal', 'Auditoria Externa de Segurança', 'visualizador@industrial.com', '(11) 91234-5678', 'COMP-001', true)
-ON CONFLICT (username) DO NOTHING;
-
--- Capacetes Inteligentes (EPIs com Sensores ESP32)
-INSERT INTO helmets (id, serial_number, mac_address, firmware_version, battery, status, last_calibration, next_inspection, assigned_employee_id, company_id)
-VALUES 
-('HELM-001', 'CAP-2026-ESP01', '24:6F:28:B4:7E:10', 'v1.0.4', 95, 'IN_USE', NOW() - INTERVAL '30 days', NOW() + INTERVAL '150 days', 'EMP001', 'COMP-001'),
-('HELM-002', 'CAP-2026-ESP02', '24:6F:28:B4:7E:11', 'v1.0.4', 80, 'AVAILABLE', NOW() - INTERVAL '15 days', NOW() + INTERVAL '165 days', NULL, 'COMP-001'),
-('HELM-003', 'CAP-2026-ESP03', '24:6F:28:B4:7E:12', 'v1.0.3', 65, 'AVAILABLE', NOW() - INTERVAL '45 days', NOW() + INTERVAL '135 days', NULL, 'COMP-001'),
-('HELM-004', 'CAP-2026-ESP04', '24:6F:28:B4:7E:13', 'v1.0.4', 90, 'MAINTENANCE', NOW() - INTERVAL '90 days', NOW() + INTERVAL '90 days', NULL, 'COMP-001')
-ON CONFLICT (id) DO NOTHING;
-
--- Operadores de Campo
-INSERT INTO employees (id, name, cpf, matricula, role_function, department, shift, emergency_contact, status, lat, lng, last_seen, battery, assigned_helmet_id, company_id)
-VALUES 
-('EMP001', 'Gabriel Araújo', '123.456.789-00', 'IND-1044', 'Operador Industrial / Protótipo ESP32', 'Usinagem & Linha de Montagem', '1º Turno (06h - 14h)', '(11) 98888-1111 (Esposa - Mariana)', 'ONLINE', -23.5505, -46.6333, EXTRACT(EPOCH FROM NOW()) * 1000, 95, 'HELM-001', 'COMP-001'),
-('EMP002', 'Gustavo Felix', '234.567.890-11', 'IND-1045', 'Técnico de Manutenção Mecânica', 'Manutenção Central', '2º Turno (14h - 22h)', '(11) 97777-2222 (Mãe - Cláudia)', 'OFFLINE', -23.5515, -46.6343, 0, 80, 'HELM-002', 'COMP-001'),
-('EMP003', 'Fabio Akira', '345.678.901-22', 'IND-1046', 'Inspetor de Qualidade & Processos', 'Qualidade & Auditoria', '1º Turno (06h - 14h)', '(11) 96666-3333 (Irmão - Roberto)', 'OFFLINE', -23.5525, -46.6353, 0, 65, 'HELM-003', 'COMP-001'),
-('EMP004', 'Fabio Pelissari', '456.789.012-33', 'IND-1047', 'Eletricista de Alta Tensão', 'Subestação Elétrica', '3º Turno (22h - 06h)', '(11) 95555-4444 (Esposa - Fernanda)', 'OFFLINE', -23.5535, -46.6363, 0, 90, NULL, 'COMP-001')
-ON CONFLICT (id) DO NOTHING;
-
--- Normas Regulamentadoras NR-06 (EPI) e NR-12 (Segurança de Máquinas)
-INSERT INTO safety_guidelines (id, code, title, description, category, compliance_status, last_audit, details)
-VALUES 
-('GUIDE-01', 'NR-06.1', 'Certificado de Aprovação (CA) de Capacetes', 'Obrigatoriedade de equipamentos com Certificado de Aprovação válido emitido pelo Ministério do Trabalho para atenuação de impacto mecânico.', 'EPI - Proteção da Cabeça', 'CONFORME', NOW(), '{"ca_exigido": true, "norma_referencia": "ABNT NBR 8221:2019"}'::jsonb),
-('GUIDE-02', 'NR-06.2', 'Inspeção e Substituição Periódica de Carneira e Casco', 'Inspeção visual periódica contra trincas, deformações térmicas, fadiga do polietileno e higienização dos sistemas de suspensão.', 'EPI - Conservação', 'CONFORME', NOW(), '{"frequencia_dias": 180, "responsavel": "SESMT"}'::jsonb),
-('GUIDE-03', 'NR-12.1', 'Sistemas de Parada de Emergência e Delimitação', 'Instalação e monitoramento contínuo de dispositivos de emergência em zonas com risco mecânico, esmagamento e prensagem.', 'Máquinas e Equipamentos', 'CONFORME', NOW(), '{"categoria_seguranca": "Categoria 4 (PLe)", "monitoramento_remoto": true}'::jsonb),
-('GUIDE-04', 'NR-12.2', 'Detecção Rápida de Queda e Impactos em Operadores', 'Protocolo de alerta e desativação automática de maquinário pesado ao detectar impactos superiores a 4G ou desaceleração abrupta.', 'Intertravamento', 'CONFORME', NOW(), '{"limite_g_seguro": 4.0, "tempo_resposta_ms": 250}'::jsonb)
-ON CONFLICT (id) DO NOTHING;
-
--- Evento de Teste de Impacto Inicial
-INSERT INTO accident_events (id, timestamp, employee_id, employee_name, aceleracao_g, pico_g, pontuacao, lat, lng, vibracao, som, acknowledged)
-VALUES 
-('ACC-001', EXTRACT(EPOCH FROM NOW() - INTERVAL '2 hours') * 1000, 'EMP001', 'Gabriel Araújo', 12.4, 14.8, 85, -23.5505, -46.6333, true, true, false)
-ON CONFLICT (id) DO NOTHING;
+DROP TRIGGER IF EXISTS users_security_token_bump ON users;
+CREATE TRIGGER users_security_token_bump
+BEFORE UPDATE ON users
+FOR EACH ROW
+EXECUTE FUNCTION trg_users_security_token_bump();
 
 -- 8. TABELA DE AUDITORIA DE CIBERSEGURANÇA E CONFORMIDADE (LGPD)
 CREATE TABLE IF NOT EXISTS security_audit_logs (

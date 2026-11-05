@@ -305,49 +305,13 @@ export default function ForgotPasswordModal({ isOpen, onClose, onSuccess }: Forg
                   />
                 </div>
 
-                {/* E-mails para demonstração rápida (Colapsável) */}
-                <div className="pt-1">
-                  <button
-                    type="button"
-                    onClick={() => setShowDemoEmails(!showDemoEmails)}
-                    className="w-full text-center text-[10px] text-zinc-500 hover:text-yellow-500 uppercase tracking-wider mb-2 flex items-center justify-center gap-1.5 cursor-pointer py-1 transition-colors"
-                    aria-expanded={showDemoEmails}
-                  >
-                    <Sparkles className="w-3 h-3 text-yellow-500/70" />
-                    <span>Atalhos de Demonstração</span>
-                    <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${showDemoEmails ? "rotate-180 text-yellow-500" : ""}`} />
-                  </button>
-
-                  <AnimatePresence>
-                    {showDemoEmails && (
-                      <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: "auto" }}
-                        exit={{ opacity: 0, height: 0 }}
-                        className="overflow-hidden space-y-1.5 pt-1"
-                      >
-                        {[
-                          { label: "Pedro Casaburi (E-mail Real Resend)", mail: "pedrocasaburi@hotmail.com" },
-                          { label: "Admin Empresa (Gbxm)", mail: "gbxm.seguranca@industrial.com" },
-                          { label: "Admin Master (Dono)", mail: "adminmaster@industrial.com" },
-                          { label: "Visualizador / Auditor", mail: "visualizador@industrial.com" }
-                        ].map(item => (
-                          <button
-                            key={item.mail}
-                            type="button"
-                            onClick={() => {
-                              setEmail(item.mail);
-                              setError("");
-                            }}
-                            className="text-[11px] bg-zinc-900/90 hover:bg-zinc-800 text-zinc-300 hover:text-yellow-400 px-3 py-1.5 rounded-lg border border-white/5 transition-all text-left flex items-center justify-between cursor-pointer group w-full"
-                          >
-                            <span className="font-medium text-zinc-400 group-hover:text-zinc-200">{item.label}</span>
-                            <span className="font-mono text-[10px] text-yellow-500/80 group-hover:text-yellow-400">{item.mail}</span>
-                          </button>
-                        ))}
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
+                <div className="bg-zinc-900/60 border border-white/5 rounded-xl p-3 text-center">
+                  <p className="text-[11px] text-zinc-400">
+                    Remetente oficial:{" "}
+                    <span className="font-mono text-yellow-500/90">
+                      suporte@mail.institutoicode.com.br
+                    </span>
+                  </p>
                 </div>
 
                 {error && (

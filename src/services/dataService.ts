@@ -1,3 +1,28 @@
+/**
+ * ============================================================================
+ * INDUSTRIAL SAFETY MONITOR - DATA SERVICE (CORE DE DADOS HÍBRIDO)
+ * ============================================================================
+ * [GUIA PARA O SQUAD DE DESENVOLVIMENTO]
+ * 
+ * Este serviço é o ÚNICO ponto de entrada e saída de dados de toda a camada de
+ * interface (React). Nenhum componente deve importar ou invocar o supabaseClient diretamente.
+ * 
+ * PADRÃO DE PERSISTÊNCIA DUAL & RESILIÊNCIA:
+ * 1. Single Source of Truth (Cloud): Supabase PostgreSQL (PostgREST + Realtime CDC).
+ * 2. Cache de Borda Offline-First (Local): LocalStorage estruturado.
+ *    - Quando uma mutação ocorre, gravamos no LocalStorage E no Supabase de forma concorrente.
+ *    - Se o Supabase estiver offline ou sem rede, a aplicação continua operando sem travar.
+ * 3. Sincronização em Tempo Real (Realtime):
+ *    - Inscrição via WebSocket no canal 'ism_realtime_channel'.
+ *    - Heartbeat de background (a cada 5 segundos) que detecta inserts/updates remotos
+ *      e atualiza a tela do usuário de forma reativa.
+ * 4. Segurança & LGPD:
+ *    - Senhas são sempre hasheadas com SHA-256 + salt antes da persistência.
+ *    - CPFs são criptografados com AES-256-GCM em repouso.
+ *    - Auditoria de segurança é gravada a cada alteração sensível.
+ * ============================================================================
+ */
+
 import { supabase, isSupabaseConfigured } from "./supabaseClient";
 import { 
   Employee, 
@@ -7,7 +32,8 @@ import {
   AccidentEvent,
   UserProfile,
   UserRole,
-  AppSetting
+  AppSetting,
+  ActiveSession
 } from "../types";
 import { 
   hashPassword, 
@@ -19,7 +45,9 @@ import {
   encryptCPF,
   decryptCPF,
   isCPFEncrypted,
-  isValidEmailStrict
+  isValidEmailStrict,
+  generateSessionSignature,
+  verifySessionSignature
 } from "../utils/security";
 
 // Tipos para comunicação bidirecional de eventos Supabase Realtime
@@ -50,287 +78,21 @@ export function safeIsoDate(val?: string | null): string | null {
 }
 
 // ============================================================
-// DADOS INICIAIS RESILIENTES (LOCALSTORAGE / FALLBACK)
+// INICIALIZAÇÃO DE CACHE LOCAL SEM SEED DATA FICTÍCIO
+// Os dados reais vêm exclusivamente do banco Supabase (PostgreSQL)
 // ============================================================
 
+const EMPTY_USERS: UserRecord[] = [];
+const EMPTY_HELMETS: Helmet[] = [];
+const EMPTY_EMPLOYEES: Employee[] = [];
+const EMPTY_GUIDELINES: SafetyGuideline[] = [];
+const EMPTY_ACCIDENTS: AccidentEvent[] = [];
 
-const SEED_USERS: UserRecord[] = [
-  {
-    id: "USR-000",
-    firstName: "Pedro",
-    lastName: "Casaburi",
-    username: "pedrocasaburi",
-    role: "MASTER",
-    password: "123456",
-    cpf: "000.111.222-33",
-    position: "Engenheiro de Sistemas / Desenvolvedor",
-    department: "Diretoria de Tecnologia & Inovação",
-    email: "pedrocasaburi@hotmail.com",
-    phone: "(11) 99999-0000",
-    active: true,
-    companyId: "COMP-001"
-  },
-  {
-    id: "USR-001",
-    firstName: "Administrador",
-    lastName: "Master",
-    username: "adminmaster",
-    role: "MASTER",
-    password: "123456",
-    cpf: "000.111.222-33",
-    position: "Engenheiro Chefe de Sistemas / Dono",
-    department: "Diretoria de Tecnologia & Inovação",
-    email: "adminmaster@industrial.com",
-    phone: "(11) 99999-0000",
-    active: true,
-    companyId: "COMP-001"
-  },
-  {
-    id: "USR-002",
-    firstName: "Gabriel",
-    lastName: "Araújo",
-    username: "Gbxm",
-    role: "COMPANY_ADMIN",
-    password: "123456",
-    cpf: "123.456.789-00",
-    position: "Engenheiro de Segurança / Admin COI",
-    department: "Centro de Operações Industriais (COI)",
-    email: "gbxm.seguranca@industrial.com",
-    phone: "(11) 98765-4321",
-    active: true,
-    companyId: "COMP-001"
-  },
-  {
-    id: "USR-003",
-    firstName: "Auditor",
-    lastName: "Visualizador",
-    username: "visualizador",
-    role: "VIEWER",
-    password: "123456",
-    cpf: "999.888.777-66",
-    position: "Técnico de Monitoramento / Fiscal",
-    department: "Auditoria Externa de Segurança",
-    email: "visualizador@industrial.com",
-    phone: "(11) 91234-5678",
-    active: true,
-    companyId: "COMP-001"
-  }
-];
-
-const SEED_HELMETS: Helmet[] = [
-  {
-    id: "HELM-001",
-    serialNumber: "CAP-2026-ESP01",
-    macAddress: "24:6F:28:B4:7E:10",
-    firmwareVersion: "v1.0.4",
-    battery: 95,
-    status: "IN_USE",
-    lastCalibration: "2026-01-10",
-    nextInspection: "2026-07-10",
-    assignedEmployeeId: "EMP001",
-    assignedEmployeeName: "Gabriel Araújo",
-    companyId: "COMP-001"
-  },
-  {
-    id: "HELM-002",
-    serialNumber: "CAP-2026-ESP02",
-    macAddress: "24:6F:28:B4:7E:11",
-    firmwareVersion: "v1.0.4",
-    battery: 80,
-    status: "AVAILABLE",
-    lastCalibration: "2026-02-15",
-    nextInspection: "2026-08-15",
-    assignedEmployeeId: null,
-    assignedEmployeeName: null,
-    companyId: "COMP-001"
-  },
-  {
-    id: "HELM-003",
-    serialNumber: "CAP-2026-ESP03",
-    macAddress: "24:6F:28:B4:7E:12",
-    firmwareVersion: "v1.0.3",
-    battery: 65,
-    status: "AVAILABLE",
-    lastCalibration: "2026-01-20",
-    nextInspection: "2026-07-20",
-    assignedEmployeeId: null,
-    assignedEmployeeName: null,
-    companyId: "COMP-001"
-  },
-  {
-    id: "HELM-004",
-    serialNumber: "CAP-2026-ESP04",
-    macAddress: "24:6F:28:B4:7E:13",
-    firmwareVersion: "v1.0.4",
-    battery: 90,
-    status: "MAINTENANCE",
-    lastCalibration: "2025-11-10",
-    nextInspection: "2026-05-10",
-    assignedEmployeeId: null,
-    assignedEmployeeName: null,
-    companyId: "COMP-001"
-  }
-];
-
-const SEED_EMPLOYEES: Employee[] = [
-  {
-    id: "EMP001",
-    name: "Gabriel Araújo",
-    cpf: "123.456.789-00",
-    matricula: "IND-1044",
-    roleFunction: "Operador Industrial / Protótipo ESP32",
-    department: "Usinagem & Linha de Montagem",
-    shift: "1º Turno (06h - 14h)",
-    emergencyContact: "(11) 98888-1111 (Esposa - Mariana)",
-    status: "ONLINE",
-    lat: -23.5505,
-    lng: -46.6333,
-    lastSeen: Date.now(),
-    battery: 95,
-    assignedHelmetId: "HELM-001",
-    assignedHelmetSerial: "CAP-2026-ESP01",
-    telemetry: {
-      aceleracaoG: 1.02,
-      picoG: 1.05,
-      pontuacao: 12,
-      vibracao: false,
-      som: false,
-      gpsValido: true,
-      satelites: 8,
-      altitude: 760,
-      wifi: "Carlos Ara_EXT",
-      ip: "192.168.0.122"
-    }
-  },
-  {
-    id: "EMP002",
-    name: "Gustavo Felix",
-    cpf: "234.567.890-11",
-    matricula: "IND-1045",
-    roleFunction: "Técnico de Manutenção Mecânica",
-    department: "Manutenção Central",
-    shift: "2º Turno (14h - 22h)",
-    emergencyContact: "(11) 97777-2222 (Mãe - Cláudia)",
-    status: "OFFLINE",
-    lat: -23.5515,
-    lng: -46.6343,
-    lastSeen: 0,
-    battery: 80,
-    assignedHelmetId: "HELM-002",
-    assignedHelmetSerial: "CAP-2026-ESP02"
-  },
-  {
-    id: "EMP003",
-    name: "Fabio Akira",
-    cpf: "345.678.901-22",
-    matricula: "IND-1046",
-    roleFunction: "Inspetor de Qualidade & Processos",
-    department: "Qualidade & Auditoria",
-    shift: "1º Turno (06h - 14h)",
-    emergencyContact: "(11) 96666-3333 (Irmão - Roberto)",
-    status: "OFFLINE",
-    lat: -23.5525,
-    lng: -46.6353,
-    lastSeen: 0,
-    battery: 65,
-    assignedHelmetId: "HELM-003",
-    assignedHelmetSerial: "CAP-2026-ESP03"
-  },
-  {
-    id: "EMP004",
-    name: "Fabio Pelissari",
-    cpf: "456.789.012-33",
-    matricula: "IND-1047",
-    roleFunction: "Eletricista de Alta Tensão",
-    department: "Subestação Elétrica",
-    shift: "3º Turno (22h - 06h)",
-    emergencyContact: "(11) 95555-4444 (Esposa - Fernanda)",
-    status: "OFFLINE",
-    lat: -23.5535,
-    lng: -46.6363,
-    lastSeen: 0,
-    battery: 90,
-    assignedHelmetId: null,
-    assignedHelmetSerial: null
-  },
-  {
-    id: "EMP005",
-    name: "Augusto Melo",
-    cpf: "567.890.123-44",
-    matricula: "IND-1048",
-    roleFunction: "Técnico de Segurança do Trabalho",
-    department: "Segurança e Higiene Ocupacional",
-    shift: "1º Turno (06h - 14h)",
-    emergencyContact: "(11) 94444-5555 (Pai - Renato)",
-    status: "OFFLINE",
-    lat: -23.5545,
-    lng: -46.6373,
-    lastSeen: 0,
-    battery: 100,
-    assignedHelmetId: null,
-    assignedHelmetSerial: null
-  }
-];
-
-const SEED_GUIDELINES: SafetyGuideline[] = [
-  {
-    id: "GUIDE-01",
-    code: "NR-06.1",
-    title: "Certificado de Aprovação (CA) de Capacetes Industriais",
-    description: "Obrigatoriedade de equipamentos com Certificado de Aprovação válido emitido pelo Ministério do Trabalho para atenuação de impacto mecânico.",
-    category: "EPI - Proteção da Cabeça",
-    complianceStatus: "CONFORME",
-    lastAudit: new Date().toISOString(),
-    details: { normaReferencia: "ABNT NBR 8221:2019", caExigido: true }
-  },
-  {
-    id: "GUIDE-02",
-    code: "NR-06.2",
-    title: "Inspeção e Substituição Periódica de Carneira e Casco",
-    description: "Inspeção visual periódica contra trincas, deformações térmicas, fadiga do polietileno e higienização dos sistemas de suspensão.",
-    category: "EPI - Conservação",
-    complianceStatus: "CONFORME",
-    lastAudit: new Date().toISOString(),
-    details: { frequenciaDias: 180, responsavel: "SESMT" }
-  },
-  {
-    id: "GUIDE-03",
-    code: "NR-12.1",
-    title: "Sistemas de Parada de Emergência e Delimitação",
-    description: "Instalação e monitoramento contínuo de dispositivos de emergência em zonas com risco mecânico, esmagamento e prensagem.",
-    category: "Máquinas e Equipamentos",
-    complianceStatus: "CONFORME",
-    lastAudit: new Date().toISOString(),
-    details: { categoriaSeguranca: "Categoria 4 (PLe)", monitoramentoRemoto: true }
-  },
-  {
-    id: "GUIDE-04",
-    code: "NR-12.2",
-    title: "Detecção Rápida de Queda e Impactos em Operadores",
-    description: "Protocolo de alerta e desativação automática de maquinário pesado ao detectar impactos superiores a 4G ou desaceleração abrupta.",
-    category: "Intertravamento",
-    complianceStatus: "CONFORME",
-    lastAudit: new Date().toISOString(),
-    details: { limiteGSeguro: 4.0, tempoRespostaMs: 250 }
-  }
-];
-
-const SEED_ACCIDENTS: AccidentEvent[] = [
-  {
-    id: "ACC-001",
-    timestamp: Date.now() - 7200000,
-    employeeId: "EMP001",
-    employeeName: "Gabriel Araújo",
-    aceleracaoG: 12.4,
-    picoG: 14.8,
-    pontuacao: 85,
-    lat: -23.5505,
-    lng: -46.6333,
-    vibracao: true,
-    som: true,
-    acknowledged: false
-  }
-];
+// Constantes de Sessão e Segurança de Acesso
+export const SESSION_STORAGE_KEY = "ism_active_session";
+export const SESSION_IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutos de inatividade máxima
+export const SESSION_WARNING_BEFORE_MS = 2 * 60 * 1000; // Aviso faltando 2 minutos
+export const SESSION_ABSOLUTE_MAX_MS = 8 * 60 * 60 * 1000; // Expiração absoluta de 8 horas (turno industrial)
 
 // Funções utilitárias para armazenamento local
 function getFromStorage<T>(key: string, defaultVal: T): T {
@@ -351,15 +113,21 @@ function saveToStorage<T>(key: string, data: T) {
   }
 }
 
-// Inicializa o LocalStorage se estiver vazio
-function initLocalStorage() {
-  if (!localStorage.getItem("ism_users")) saveToStorage("ism_users", SEED_USERS);
-  if (!localStorage.getItem("ism_helmets")) saveToStorage("ism_helmets", SEED_HELMETS);
-  if (!localStorage.getItem("ism_employees")) saveToStorage("ism_employees", SEED_EMPLOYEES);
-  if (!localStorage.getItem("ism_guidelines")) saveToStorage("ism_guidelines", SEED_GUIDELINES);
-  if (!localStorage.getItem("ism_accidents")) saveToStorage("ism_accidents", SEED_ACCIDENTS);
-  if (!localStorage.getItem("ism_app_settings")) saveToStorage("ism_app_settings", { faq_forms_url: "" });
+// Higieniza seeds fictícios legados do LocalStorage caso nunca tenha sincronizado com a nuvem
+function purgeLegacySeedStorageOnce() {
+  if (typeof window === "undefined") return;
+  try {
+    const cleaned = localStorage.getItem("ism_seed_purged_v2");
+    if (!cleaned) {
+      localStorage.removeItem("ism_users");
+      localStorage.removeItem("ism_helmets");
+      localStorage.removeItem("ism_employees");
+      localStorage.removeItem("ism_accidents");
+      localStorage.setItem("ism_seed_purged_v2", "true");
+    }
+  } catch {}
 }
+purgeLegacySeedStorageOnce();
 
 // ============================================================
 // CANAL DE SINCRONIZAÇÃO BIDIRECIONAL EM TEMPO REAL (SUPABASE REALTIME)
@@ -387,7 +155,7 @@ if (supabase) {
         { event: "*", schema: "public", table: "users" },
         (payload) => {
           console.log("[Supabase Realtime] Alteração na tabela users detectada na raiz:", payload);
-          const localUsers = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
+          const localUsers = getFromStorage<UserRecord[]>("ism_users", EMPTY_USERS);
 
           if (payload.eventType === "INSERT") {
             const u = payload.new as any;
@@ -447,7 +215,7 @@ if (supabase) {
         { event: "*", schema: "public", table: "employees" },
         (payload) => {
           console.log("[Supabase Realtime] Alteração na tabela employees detectada na raiz:", payload);
-          const localEmps = getFromStorage<Employee[]>("ism_employees", SEED_EMPLOYEES);
+          const localEmps = getFromStorage<Employee[]>("ism_employees", EMPTY_EMPLOYEES);
 
           if (payload.eventType === "INSERT") {
             const e = payload.new as any;
@@ -511,7 +279,7 @@ if (supabase) {
         { event: "*", schema: "public", table: "helmets" },
         (payload) => {
           console.log("[Supabase Realtime] Alteração na tabela helmets detectada na raiz:", payload);
-          const localHelms = getFromStorage<Helmet[]>("ism_helmets", SEED_HELMETS);
+          const localHelms = getFromStorage<Helmet[]>("ism_helmets", EMPTY_HELMETS);
 
           if (payload.eventType === "INSERT") {
             const h = payload.new as any;
@@ -562,7 +330,7 @@ if (supabase) {
         { event: "INSERT", schema: "public", table: "accident_events" },
         (payload) => {
           console.log("[Supabase Realtime] Novo alerta de impacto recebido da raiz:", payload);
-          const localAcc = getFromStorage<AccidentEvent[]>("ism_accidents", SEED_ACCIDENTS);
+          const localAcc = getFromStorage<AccidentEvent[]>("ism_accidents", EMPTY_ACCIDENTS);
           const a = payload.new as any;
           const mapped: AccidentEvent = {
             id: a.id,
@@ -638,7 +406,7 @@ async function runBidirectionalHeartbeatSync() {
     // 1. Sincronizar Usuários
     const { data: dbUsers, error: uErr } = await supabase.from("users").select("*");
     if (!uErr && dbUsers) {
-      const currentLocalUsers = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
+      const currentLocalUsers = getFromStorage<UserRecord[]>("ism_users", EMPTY_USERS);
       let usersChanged = false;
       // Descriptografa CPF de cada usuário sincronizado (AES-GCM)
       const mapped: UserRecord[] = await Promise.all(dbUsers.map(async u => ({
@@ -690,7 +458,7 @@ async function runBidirectionalHeartbeatSync() {
     // 2. Sincronizar Capacetes
     const { data: dbHelmets, error: hErr } = await supabase.from("helmets").select("*");
     if (!hErr && dbHelmets) {
-      const currentLocalHelmets = getFromStorage<Helmet[]>("ism_helmets", SEED_HELMETS);
+      const currentLocalHelmets = getFromStorage<Helmet[]>("ism_helmets", EMPTY_HELMETS);
       let helmetsChanged = false;
       const mappedH: Helmet[] = dbHelmets.map(h => ({
         id: h.id,
@@ -738,7 +506,7 @@ async function runBidirectionalHeartbeatSync() {
     // 3. Sincronizar Funcionários
     const { data: dbEmps, error: eErr } = await supabase.from("employees").select("*");
     if (!eErr && dbEmps) {
-      const currentLocalEmps = getFromStorage<Employee[]>("ism_employees", SEED_EMPLOYEES);
+      const currentLocalEmps = getFromStorage<Employee[]>("ism_employees", EMPTY_EMPLOYEES);
       let empsChanged = false;
       const mappedE: Employee[] = dbEmps.map(e => ({
         id: e.id,
@@ -821,7 +589,7 @@ export const dataService = {
     if (supabase) {
       try {
         const { data, error } = await supabase.from("users").select("*").order("created_at", { ascending: true });
-        if (!error && data && data.length > 0) {
+        if (!error && data) {
           // Descriptografa CPF de cada usuário em paralelo (AES-GCM)
           const mappedUsers: UserRecord[] = await Promise.all(data.map(async u => ({
             id: u.id,
@@ -846,7 +614,7 @@ export const dataService = {
         console.warn("[dataService] Falha ao buscar usuários do Supabase, utilizando cache local:", err);
       }
     }
-    const localUsers = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
+    const localUsers = getFromStorage<UserRecord[]>("ism_users", EMPTY_USERS);
     return Promise.all(localUsers.map(async u => ({
       ...u,
       cpf: await decryptCPF(u.cpf || "")
@@ -903,19 +671,220 @@ export const dataService = {
     }
   },
 
-  async authenticate(username: string, pass: string): Promise<{ success: boolean; user?: UserProfile; role?: UserRole; message?: string }> {
-    // 1. Tentar autenticação no Supabase se ativo
+  // ------------------------------------------------------------
+  // GESTÃO DE SESSÃO PERSISTENTE, INATIVIDADE E RBAC (SUPABASE)
+  // ------------------------------------------------------------
+  async createSession(user: UserProfile, role: UserRole, tokenVersion: number = 1): Promise<ActiveSession> {
+    const now = Date.now();
+    const signature = await generateSessionSignature(user.username, role, now, tokenVersion);
+    const session: ActiveSession = {
+      username: user.username,
+      role,
+      user,
+      loginAt: now,
+      lastActivityAt: now,
+      tokenVersion,
+      signature
+    };
+    saveToStorage(SESSION_STORAGE_KEY, session);
+    return session;
+  },
+
+  getStoredSession(): ActiveSession | null {
+    return getFromStorage<ActiveSession | null>(SESSION_STORAGE_KEY, null);
+  },
+
+  async touchSessionActivity(): Promise<void> {
+    const session = this.getStoredSession();
+    if (!session) return;
+    session.lastActivityAt = Date.now();
+    saveToStorage(SESSION_STORAGE_KEY, session);
+  },
+
+  async clearSession(reason?: string): Promise<void> {
+    const session = this.getStoredSession();
+    try {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+    } catch {}
+    if (session && reason) {
+      await this.recordAudit("SESSION_EXPIRED", session.username, undefined, reason);
+    }
+  },
+
+  /**
+   * Valida a sessão atual contra múltiplas metodologias de segurança:
+   * 1. Integridade da assinatura criptográfica SHA-256 (anti-tampering de role no LocalStorage)
+   * 2. Tempo máximo de inatividade (Idle Timeout: 15 minutos)
+   * 3. Expiração absoluta de turno (Absolute Session Timeout: 8 horas)
+   * 4. Validação ao vivo no Supabase: status `active`, `role` RBAC real e `token_version` (revogação de senha)
+   */
+  async validateAndRestoreSession(): Promise<{
+    valid: boolean;
+    session?: ActiveSession;
+    reason?: string;
+  }> {
+    const session = this.getStoredSession();
+    if (!session || !session.username || !session.signature) {
+      return { valid: false };
+    }
+
+    const now = Date.now();
+
+    // Metodologia 1: Expiração absoluta de turno (8h)
+    if (now - session.loginAt > SESSION_ABSOLUTE_MAX_MS) {
+      await this.clearSession("Sessão encerrada por atingir o limite máximo de 8 horas de turno.");
+      return { valid: false, reason: "Sua sessão atingiu o limite máximo de 8 horas. Faça login novamente." };
+    }
+
+    // Metodologia 2: Expiração por inatividade (15 minutos sem interação)
+    if (now - session.lastActivityAt > SESSION_IDLE_TIMEOUT_MS) {
+      await this.clearSession("Sessão encerrada automaticamente por inatividade superior a 15 minutos.");
+      return { valid: false, reason: "Sessão encerrada por inatividade (15 min). Faça login novamente para continuar." };
+    }
+
+    // Metodologia 3: Verificação de assinatura criptográfica SHA-256 contra adulteração local
+    const isSigValid = await verifySessionSignature(
+      session.username,
+      session.role,
+      session.loginAt,
+      session.tokenVersion || 1,
+      session.signature
+    );
+    if (!isSigValid) {
+      await this.recordAudit("RBAC_VIOLATION", session.username, undefined, "Assinatura de sessão inválida ou adulterada no cliente");
+      await this.clearSession();
+      return { valid: false, reason: "Violação de integridade de sessão detectada. Autentique-se novamente." };
+    }
+
+    // Metodologia 4: Revalidação RBAC e Token Version ao vivo no Supabase Cloud
+    if (supabase) {
+      try {
+        const { data: dbUser, error } = await supabase
+          .from("users")
+          .select("*")
+          .eq("username", session.username)
+          .maybeSingle();
+
+        if (!error && dbUser) {
+          if (dbUser.active === false) {
+            await this.recordAudit("SESSION_REVOKED", session.username, undefined, "Conta desativada no Supabase durante sessão ativa");
+            await this.clearSession();
+            return { valid: false, reason: "Sua conta foi desativada pelo administrador." };
+          }
+
+          const dbTokenVersion = dbUser.token_version || 1;
+          if (dbTokenVersion !== (session.tokenVersion || 1)) {
+            await this.recordAudit("SESSION_REVOKED", session.username, undefined, "Token revogado por redefinição de credenciais");
+            await this.clearSession();
+            return { valid: false, reason: "Suas credenciais foram alteradas recentemente. Faça login novamente." };
+          }
+
+          // Atualiza perfil e role conforme o banco de dados oficial (RBAC estrito do DB)
+          const authoritativeRole = (dbUser.role as UserRole) || "VIEWER";
+          const updatedProfile: UserProfile = {
+            firstName: dbUser.first_name || session.user.firstName,
+            lastName: dbUser.last_name || session.user.lastName,
+            username: dbUser.username,
+            role: authoritativeRole,
+            cpf: await decryptCPF(dbUser.cpf || ""),
+            position: dbUser.position || "",
+            department: dbUser.department || "",
+            email: dbUser.email || "",
+            phone: dbUser.phone || ""
+          };
+
+          const refreshedSig = await generateSessionSignature(
+            dbUser.username,
+            authoritativeRole,
+            session.loginAt,
+            dbTokenVersion
+          );
+
+          const refreshedSession: ActiveSession = {
+            ...session,
+            role: authoritativeRole,
+            user: updatedProfile,
+            lastActivityAt: now,
+            tokenVersion: dbTokenVersion,
+            signature: refreshedSig
+          };
+          saveToStorage(SESSION_STORAGE_KEY, refreshedSession);
+          return { valid: true, session: refreshedSession };
+        }
+      } catch (err) {
+        console.warn("[dataService] Falha transitória ao revalidar sessão no Supabase, mantendo sessão assinada local:", err);
+      }
+    }
+
+    // Atualiza atividade e retorna sessão válida
+    session.lastActivityAt = now;
+    saveToStorage(SESSION_STORAGE_KEY, session);
+    return { valid: true, session };
+  },
+
+  /**
+   * Verifica permissão RBAC diretamente no banco Supabase antes de autorizar mutações críticas.
+   */
+  async verifyRbacPermission(actorUsername: string, allowedRoles: UserRole[]): Promise<{ allowed: boolean; currentRole?: UserRole; message?: string }> {
+    const session = this.getStoredSession();
+    const effectiveActor = actorUsername && actorUsername !== "system" ? actorUsername : session?.username || "";
+
+    if (!effectiveActor) {
+      return { allowed: false, message: "Sessão não identificada para executar esta operação protegida por RBAC." };
+    }
+
     if (supabase) {
       try {
         const { data, error } = await supabase
           .from("users")
-          .select("*")
-          .eq("username", username)
-          .single();
+          .select("role, active")
+          .eq("username", effectiveActor)
+          .maybeSingle();
 
         if (!error && data) {
           if (!data.active) {
-            await this.recordAudit("LOGIN_FAILED", username, undefined, "Tentativa em conta desativada");
+            return { allowed: false, message: "Conta de usuário inativa no Supabase." };
+          }
+          const dbRole = data.role as UserRole;
+          if (!allowedRoles.includes(dbRole)) {
+            await this.recordAudit(
+              "RBAC_VIOLATION",
+              effectiveActor,
+              undefined,
+              `Tentativa de operação restrita a [${allowedRoles.join(", ")}] com perfil ${dbRole}`
+            );
+            return {
+              allowed: false,
+              currentRole: dbRole,
+              message: `Acesso negado pelo RBAC do Supabase: seu perfil (${dbRole}) não possui privilégio para esta operação.`
+            };
+          }
+          return { allowed: true, currentRole: dbRole };
+        }
+      } catch {}
+    }
+
+    if (session && allowedRoles.includes(session.role)) {
+      return { allowed: true, currentRole: session.role };
+    }
+
+    return { allowed: false, message: "Permissão RBAC insuficiente para realizar esta operação." };
+  },
+
+  async authenticate(username: string, pass: string): Promise<{ success: boolean; user?: UserProfile; role?: UserRole; message?: string }> {
+    const cleanInput = username.trim();
+    // 1. Tentar autenticação no Supabase se ativo (suporta username ou e-mail)
+    if (supabase) {
+      try {
+        const isEmail = cleanInput.includes("@");
+        const query = supabase.from("users").select("*");
+        const { data, error } = isEmail
+          ? await query.ilike("email", cleanInput).maybeSingle()
+          : await query.eq("username", cleanInput).maybeSingle();
+
+        if (!error && data) {
+          if (!data.active) {
+            await this.recordAudit("LOGIN_FAILED", cleanInput, undefined, "Tentativa em conta desativada");
             return { success: false, message: "Usuário desativado pelo administrador." };
           }
 
@@ -924,22 +893,24 @@ export const dataService = {
           if (valid) {
             if (requiresRehash) {
               const secureHash = await hashPassword(pass);
-              await supabase.from("users").update({ password: secureHash }).eq("username", username);
+              await supabase.from("users").update({ password: secureHash }).eq("id", data.id);
             }
 
-            await this.recordAudit("LOGIN_SUCCESS", username, undefined, "Autenticado via Supabase Cloud");
+            await this.recordAudit("LOGIN_SUCCESS", data.username, undefined, "Autenticado via Supabase Cloud");
+            const userRole = (data.role as UserRole) || "VIEWER";
             const userProfile: UserProfile = {
               firstName: data.first_name,
               lastName: data.last_name,
               username: data.username,
-              role: data.role as UserRole,
+              role: userRole,
               cpf: await decryptCPF(data.cpf || ""),
-              position: data.position,
-              department: data.department,
-              email: data.email,
-              phone: data.phone
+              position: data.position || "",
+              department: data.department || "",
+              email: data.email || "",
+              phone: data.phone || ""
             };
-            return { success: true, user: userProfile, role: data.role as UserRole };
+            await this.createSession(userProfile, userRole, data.token_version || 1);
+            return { success: true, user: userProfile, role: userRole };
           }
         }
       } catch (err) {
@@ -948,12 +919,14 @@ export const dataService = {
     }
 
     // 2. Fallback local resiliente
-    const localUsers = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
-    const found = localUsers.find(u => u.username === username);
+    const localUsers = getFromStorage<UserRecord[]>("ism_users", EMPTY_USERS);
+    const found = localUsers.find(
+      u => u.username === cleanInput || (u.email && u.email.toLowerCase() === cleanInput.toLowerCase())
+    );
 
     if (found) {
       if (!found.active) {
-        await this.recordAudit("LOGIN_FAILED", username, undefined, "Tentativa local em conta desativada");
+        await this.recordAudit("LOGIN_FAILED", cleanInput, undefined, "Tentativa local em conta desativada");
         return { success: false, message: "Usuário desativado pelo administrador." };
       }
 
@@ -964,31 +937,46 @@ export const dataService = {
           saveToStorage("ism_users", localUsers);
         }
 
-        await this.recordAudit("LOGIN_SUCCESS", username, undefined, "Autenticado via Armazenamento Local");
+        await this.recordAudit("LOGIN_SUCCESS", found.username, undefined, "Autenticado via Armazenamento Local");
+        const userProfile: UserProfile = {
+          firstName: found.firstName,
+          lastName: found.lastName,
+          username: found.username,
+          role: found.role,
+          cpf: found.cpf ? await decryptCPF(found.cpf) : "",
+          position: found.position,
+          department: found.department,
+          email: found.email,
+          phone: found.phone
+        };
+        await this.createSession(userProfile, found.role, 1);
         return {
           success: true,
-          user: {
-            firstName: found.firstName,
-            lastName: found.lastName,
-            username: found.username,
-            role: found.role,
-            cpf: found.cpf ? await decryptCPF(found.cpf) : "",
-            position: found.position,
-            department: found.department,
-            email: found.email,
-            phone: found.phone
-          },
+          user: userProfile,
           role: found.role
         };
       }
     }
 
-    await this.recordAudit("LOGIN_FAILED", username, undefined, "Credenciais inválidas");
+    await this.recordAudit("LOGIN_FAILED", cleanInput, undefined, "Credenciais inválidas");
     return { success: false, message: "Usuário ou senha incorretos." };
   },
 
   async saveUser(user: Partial<UserRecord>, actor: string = "system"): Promise<MutationResult<UserRecord>> {
-    const localUsers = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
+    // Validação RBAC no Supabase para operações administrativas (exceto auto-cadastro público 'register' e atualização do próprio perfil)
+    const activeSession = this.getStoredSession();
+    const isSelfProfileUpdate = activeSession && activeSession.username === user.username && (!user.role || user.role === activeSession.role);
+    if (actor !== "register" && !isSelfProfileUpdate) {
+      const rbac = await this.verifyRbacPermission(actor, ["MASTER", "COMPANY_ADMIN"]);
+      if (!rbac.allowed) {
+        return { success: false, message: rbac.message || "Acesso negado pelo controle RBAC." };
+      }
+      if (user.role === "MASTER" && rbac.currentRole !== "MASTER") {
+        return { success: false, message: "Apenas Administradores Master podem conceder ou editar perfis de nível MASTER." };
+      }
+    }
+
+    const localUsers = getFromStorage<UserRecord[]>("ism_users", EMPTY_USERS);
     let updatedUsers: UserRecord[];
 
     // Garante hash criptográfico seguro na senha antes de salvar
@@ -1181,7 +1169,11 @@ export const dataService = {
   },
 
   async toggleUserStatus(username: string, actor: string = "system"): Promise<MutationResult<boolean>> {
-    const users = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
+    const rbac = await this.verifyRbacPermission(actor, ["MASTER", "COMPANY_ADMIN"]);
+    if (!rbac.allowed) {
+      return { success: false, message: rbac.message || "Acesso negado pelo controle RBAC." };
+    }
+    const users = getFromStorage<UserRecord[]>("ism_users", EMPTY_USERS);
     const target = users.find(u => u.username === username);
     if (!target) return { success: false, message: "Usuário não encontrado." };
     target.active = !target.active;
@@ -1211,7 +1203,11 @@ export const dataService = {
   },
 
   async deleteUser(username: string, actor: string = "system"): Promise<MutationResult<null>> {
-    let users = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
+    const rbac = await this.verifyRbacPermission(actor, ["MASTER", "COMPANY_ADMIN"]);
+    if (!rbac.allowed) {
+      return { success: false, message: rbac.message || "Acesso negado pelo controle RBAC." };
+    }
+    let users = getFromStorage<UserRecord[]>("ism_users", EMPTY_USERS);
     users = users.filter(u => u.username !== username);
     saveToStorage("ism_users", users);
 
@@ -1240,7 +1236,7 @@ export const dataService = {
     if (supabase) {
       try {
         const { data, error } = await supabase.from("helmets").select("*").order("id", { ascending: true });
-        if (!error && data && data.length > 0) {
+        if (!error && data) {
           const mappedHelmets: Helmet[] = data.map(h => ({
             id: h.id,
             serialNumber: h.serial_number,
@@ -1260,11 +1256,15 @@ export const dataService = {
         console.warn("[dataService] Erro ao buscar capacetes do Supabase:", e);
       }
     }
-    return getFromStorage<Helmet[]>("ism_helmets", SEED_HELMETS);
+    return getFromStorage<Helmet[]>("ism_helmets", EMPTY_HELMETS);
   },
 
   async saveHelmet(helmet: Helmet): Promise<MutationResult<Helmet>> {
-    const helmets = getFromStorage<Helmet[]>("ism_helmets", SEED_HELMETS);
+    const rbac = await this.verifyRbacPermission("system", ["MASTER", "COMPANY_ADMIN"]);
+    if (!rbac.allowed) {
+      return { success: false, message: rbac.message || "Perfil Visualizador não possui permissão para alterar capacetes." };
+    }
+    const helmets = getFromStorage<Helmet[]>("ism_helmets", EMPTY_HELMETS);
     const index = helmets.findIndex(h => h.id === helmet.id);
     const sanitizedAssignedEmp = (helmet.assignedEmployeeId && helmet.assignedEmployeeId !== "none" && helmet.assignedEmployeeId.trim() !== "") 
       ? helmet.assignedEmployeeId.trim() 
@@ -1367,7 +1367,11 @@ export const dataService = {
   },
 
   async deleteHelmet(id: string): Promise<MutationResult<null>> {
-    let helmets = getFromStorage<Helmet[]>("ism_helmets", SEED_HELMETS);
+    const rbac = await this.verifyRbacPermission("system", ["MASTER", "COMPANY_ADMIN"]);
+    if (!rbac.allowed) {
+      return { success: false, message: rbac.message || "Perfil Visualizador não possui permissão para excluir capacetes." };
+    }
+    let helmets = getFromStorage<Helmet[]>("ism_helmets", EMPTY_HELMETS);
     helmets = helmets.filter(h => h.id !== id);
     saveToStorage("ism_helmets", helmets);
 
@@ -1394,24 +1398,32 @@ export const dataService = {
   async getEmployees(): Promise<Employee[]> {
     if (supabase) {
       try {
-        const { data, error } = await supabase.from("employees").select("*").order("id", { ascending: true });
-        if (!error && data && data.length > 0) {
-          const mappedEmployees: Employee[] = await Promise.all(data.map(async e => ({
-            id: e.id,
-            name: e.name,
-            cpf: await decryptCPF(e.cpf || ""),
-            matricula: e.matricula,
-            roleFunction: e.role_function,
-            department: e.department,
-            shift: e.shift,
-            emergencyContact: e.emergency_contact,
-            status: e.status,
-            lat: typeof e.lat === "number" ? e.lat : -23.5505,
-            lng: typeof e.lng === "number" ? e.lng : -46.6333,
-            lastSeen: Number(e.last_seen) || 0,
-            battery: typeof e.battery === "number" ? e.battery : 100,
-            assignedHelmetId: e.assigned_helmet_id
-          })));
+        const [{ data, error }, { data: helmsData }] = await Promise.all([
+          supabase.from("employees").select("*").order("id", { ascending: true }),
+          supabase.from("helmets").select("id, serial_number, mac_address, assigned_employee_id")
+        ]);
+        if (!error && data) {
+          const helmsList = helmsData || [];
+          const mappedEmployees: Employee[] = await Promise.all(data.map(async e => {
+            const linkedHelm = helmsList.find(h => h.id === e.assigned_helmet_id || h.assigned_employee_id === e.id);
+            return {
+              id: e.id,
+              name: e.name,
+              cpf: await decryptCPF(e.cpf || ""),
+              matricula: e.matricula,
+              roleFunction: e.role_function,
+              department: e.department,
+              shift: e.shift,
+              emergencyContact: e.emergency_contact,
+              status: e.status,
+              lat: typeof e.lat === "number" ? e.lat : -23.5505,
+              lng: typeof e.lng === "number" ? e.lng : -46.6333,
+              lastSeen: Number(e.last_seen) || 0,
+              battery: typeof e.battery === "number" ? e.battery : 100,
+              assignedHelmetId: e.assigned_helmet_id || linkedHelm?.id || null,
+              assignedHelmetSerial: linkedHelm?.serial_number || null
+            };
+          }));
           saveToStorage("ism_employees", mappedEmployees);
           return mappedEmployees;
         }
@@ -1419,7 +1431,7 @@ export const dataService = {
         console.warn("[dataService] Erro ao carregar funcionários do Supabase:", e);
       }
     }
-    const localEmployees = getFromStorage<Employee[]>("ism_employees", SEED_EMPLOYEES);
+    const localEmployees = getFromStorage<Employee[]>("ism_employees", EMPTY_EMPLOYEES);
     return Promise.all(localEmployees.map(async e => ({
       ...e,
       cpf: await decryptCPF(e.cpf || "")
@@ -1427,7 +1439,11 @@ export const dataService = {
   },
 
   async saveEmployee(employee: Employee): Promise<MutationResult<Employee>> {
-    const employees = getFromStorage<Employee[]>("ism_employees", SEED_EMPLOYEES);
+    const rbac = await this.verifyRbacPermission("system", ["MASTER", "COMPANY_ADMIN"]);
+    if (!rbac.allowed) {
+      return { success: false, message: rbac.message || "Perfil Visualizador não possui permissão para alterar operadores." };
+    }
+    const employees = getFromStorage<Employee[]>("ism_employees", EMPTY_EMPLOYEES);
     const index = employees.findIndex(e => e.id === employee.id);
     const sanitizedHelmetId = (employee.assignedHelmetId && employee.assignedHelmetId !== "none" && employee.assignedHelmetId.trim() !== "") 
       ? employee.assignedHelmetId.trim() 
@@ -1540,7 +1556,11 @@ export const dataService = {
   },
 
   async deleteEmployee(id: string): Promise<MutationResult<null>> {
-    let employees = getFromStorage<Employee[]>("ism_employees", SEED_EMPLOYEES);
+    const rbac = await this.verifyRbacPermission("system", ["MASTER", "COMPANY_ADMIN"]);
+    if (!rbac.allowed) {
+      return { success: false, message: rbac.message || "Perfil Visualizador não possui permissão para excluir operadores." };
+    }
+    let employees = getFromStorage<Employee[]>("ism_employees", EMPTY_EMPLOYEES);
     employees = employees.filter(e => e.id !== id);
     saveToStorage("ism_employees", employees);
 
@@ -1584,7 +1604,7 @@ export const dataService = {
         console.warn("[dataService] Erro ao buscar normas do Supabase:", e);
       }
     }
-    return getFromStorage<SafetyGuideline[]>("ism_guidelines", SEED_GUIDELINES);
+    return getFromStorage<SafetyGuideline[]>("ism_guidelines", EMPTY_GUIDELINES);
   },
 
   // ------------------------------------------------------------
@@ -1594,8 +1614,8 @@ export const dataService = {
     if (supabase) {
       try {
         const { data, error } = await supabase.from("accident_events").select("*").order("timestamp", { ascending: false });
-        if (!error && data && data.length > 0) {
-          return data.map(a => ({
+        if (!error && data) {
+          const mappedAccidents = data.map(a => ({
             id: a.id,
             timestamp: Number(a.timestamp),
             employeeId: a.employee_id,
@@ -1611,16 +1631,18 @@ export const dataService = {
             acknowledgedBy: a.acknowledged_by,
             acknowledgedAt: a.acknowledged_at
           }));
+          saveToStorage("ism_accidents", mappedAccidents);
+          return mappedAccidents;
         }
       } catch (e) {
         console.warn("[dataService] Erro ao buscar acidentes do Supabase:", e);
       }
     }
-    return getFromStorage<AccidentEvent[]>("ism_accidents", SEED_ACCIDENTS);
+    return getFromStorage<AccidentEvent[]>("ism_accidents", EMPTY_ACCIDENTS);
   },
 
   async recordAccident(accident: AccidentEvent): Promise<boolean> {
-    const accidents = getFromStorage<AccidentEvent[]>("ism_accidents", SEED_ACCIDENTS);
+    const accidents = getFromStorage<AccidentEvent[]>("ism_accidents", EMPTY_ACCIDENTS);
     const updated = [accident, ...accidents.slice(0, 49)];
     saveToStorage("ism_accidents", updated);
 
@@ -1748,7 +1770,7 @@ export const dataService = {
       }
 
       if (!userFound) {
-        const localUsers = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
+        const localUsers = getFromStorage<UserRecord[]>("ism_users", EMPTY_USERS);
         const u = localUsers.find(x => x.email.toLowerCase() === normalizedEmail);
         if (u && u.active !== false) {
           userFound = true;
@@ -1845,7 +1867,7 @@ export const dataService = {
 
           // Atualizar no storage local também para consistência
           const securePassword = await hashPassword(newPassword);
-          const localUsers = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
+          const localUsers = getFromStorage<UserRecord[]>("ism_users", EMPTY_USERS);
           const idx = localUsers.findIndex(u => u.email.toLowerCase() === normalizedEmail);
           if (idx >= 0) {
             localUsers[idx].password = securePassword;
@@ -1939,7 +1961,7 @@ export const dataService = {
       }
 
       // Atualizar no storage local
-      const localUsers = getFromStorage<UserRecord[]>("ism_users", SEED_USERS);
+      const localUsers = getFromStorage<UserRecord[]>("ism_users", EMPTY_USERS);
       const idx = localUsers.findIndex(u => u.email.toLowerCase() === normalizedEmail);
       if (idx >= 0) {
         localUsers[idx].password = securePassword;

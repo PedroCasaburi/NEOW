@@ -1,5 +1,5 @@
-import { useEffect, useState, useRef } from "react";
-import { Employee, WebSocketMessage, SystemStats, RecentActivity, UserProfile, UserRole } from "./types";
+import { useEffect, useState, useRef, useCallback } from "react";
+import { Employee, Helmet, WebSocketMessage, SystemStats, RecentActivity, UserProfile, UserRole } from "./types";
 import Sidebar from "./components/Sidebar";
 import Map from "./components/Map";
 import VideoPlayer from "./components/VideoPlayer";
@@ -13,9 +13,13 @@ import SafetyAnalyticsModal from "./components/SafetyAnalyticsModal";
 import CookieConsentBanner from "./components/CookieConsentBanner";
 import PrivacyPolicyModal from "./components/PrivacyPolicyModal";
 import ForgotPasswordModal from "./components/ForgotPasswordModal";
-import { dataService } from "./services/dataService";
-import { AlertCircle, Bell, X, ArrowLeft, Users as UsersIcon } from "lucide-react";
-import { motion, AnimatePresence } from "motion/react";
+import {
+  dataService,
+  SESSION_STORAGE_KEY,
+  SESSION_IDLE_TIMEOUT_MS,
+  SESSION_WARNING_BEFORE_MS
+} from "./services/dataService";
+import { Bell, ArrowLeft, Users as UsersIcon, ShieldAlert, Clock, RefreshCw } from "lucide-react";
 
 function cn(...inputs: any[]) {
   return inputs.filter(Boolean).join(" ");
@@ -23,15 +27,20 @@ function cn(...inputs: any[]) {
 
 export default function App() {
   const [employees, setEmployees] = useState<Employee[]>([]);
-  const [selectedEmployeeId, setSelectedEmployeeId] = useState<string | null>("EMP001");
+  const [helmets, setHelmets] = useState<Helmet[]>([]);
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState<string | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isRestoringSession, setIsRestoringSession] = useState(true);
   const [authView, setAuthView] = useState<"LOGIN" | "REGISTER">("LOGIN");
   const [username, setUsername] = useState("");
-  const [userRole, setUserRole] = useState<UserRole>("COMPANY_ADMIN");
+  const [userRole, setUserRole] = useState<UserRole>("VIEWER");
   const [view, setView] = useState<"HOME" | "MAP">("HOME");
   const [loginError, setLoginError] = useState("");
   const [loginSuccessMessage, setLoginSuccessMessage] = useState("");
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
+
+  // Estado de monitoramento de inatividade da sessão (em segundos restantes quando em alerta)
+  const [sessionRemainingSec, setSessionRemainingSec] = useState<number | null>(null);
 
   // Estados dos Modais do Sistema & LGPD
   const [showHelmetModal, setShowHelmetModal] = useState(false);
@@ -45,69 +54,252 @@ export default function App() {
   const [stats, setStats] = useState<SystemStats>({
     signalsToday: 0,
     emergenciesToday: 0,
-    activeHelmets: 1,
-    disconnectedHelmets: 3,
+    activeHelmets: 0,
+    disconnectedHelmets: 0,
     systemStatus: "NOMINAL"
   });
 
   const [activities, setActivities] = useState<RecentActivity[]>([]);
 
   const [currentUser, setCurrentUser] = useState<UserProfile>({
-    firstName: "Admin",
-    lastName: "Empresa",
-    username: "Gbxm",
-    role: "COMPANY_ADMIN",
-    cpf: "123.456.789-00",
-    position: "Engenheiro de Segurança / Admin",
-    department: "Centro de Operações Industriais (COI)",
-    email: "gbxm.seguranca@industrial.com",
-    phone: "(11) 98765-4321"
+    firstName: "",
+    lastName: "",
+    username: "",
+    role: "VIEWER",
+    cpf: "",
+    position: "",
+    department: "",
+    email: "",
+    phone: ""
   });
 
   const ws = useRef<WebSocket | null>(null);
+  const lastActivityTouchRef = useRef<number>(0);
 
-  // Carrega lista inicial de funcionários do dataService (Supabase ou Local)
-  useEffect(() => {
-    const initData = async () => {
-      const initialEmps = await dataService.getEmployees();
-      if (initialEmps && initialEmps.length > 0) {
-        setEmployees(initialEmps);
-        const activeCount = initialEmps.filter(e => e.status !== "OFFLINE").length;
-        const disconnectedCount = initialEmps.filter(e => e.status === "OFFLINE").length;
-        setStats(prev => ({
-          ...prev,
-          activeHelmets: activeCount,
-          disconnectedHelmets: disconnectedCount
-        }));
-      }
-    };
-    initData();
+  // Função auxiliar para encerrar sessão com motivo opcional de segurança/inatividade
+  const forceLogoutWithReason = useCallback((reason?: string) => {
+    dataService.clearSession(reason || "Logout do usuário");
+    setIsAuthenticated(false);
+    setUsername("");
+    setUserRole("VIEWER");
+    setView("HOME");
+    setSelectedEmployeeId(null);
+    setSessionRemainingSec(null);
+    if (reason) {
+      setLoginError(reason);
+      setLoginSuccessMessage("");
+    }
   }, []);
 
+  // 1. Restauração e Validação de Sessão Persistente ao Recarregar Página (Ctrl+R / F5)
+  useEffect(() => {
+    let mounted = true;
+    const restoreSession = async () => {
+      try {
+        const result = await dataService.validateAndRestoreSession();
+        if (!mounted) return;
+
+        if (result.valid && result.session) {
+          setIsAuthenticated(true);
+          setUsername(result.session.username);
+          setUserRole(result.session.role);
+          setCurrentUser(result.session.user);
+          setLoginError("");
+        } else if (result.expiredReason) {
+          setIsAuthenticated(false);
+          setLoginError(result.expiredReason);
+        }
+      } catch (err) {
+        console.error("[Sessão] Erro ao restaurar sessão:", err);
+      } finally {
+        if (mounted) {
+          setIsRestoringSession(false);
+        }
+      }
+    };
+    restoreSession();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // 2. Metodologias Múltiplas de Inatividade, Segurança de Sessão e Sincronização Entre Abas
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setSessionRemainingSec(null);
+      return;
+    }
+
+    // Metodologia A: Monitoramento de eventos de interação humana no DOM (throttled a cada 5s)
+    const handleUserActivity = () => {
+      const now = Date.now();
+      if (now - lastActivityTouchRef.current >= 5000) {
+        lastActivityTouchRef.current = now;
+        void dataService.touchSessionActivity();
+      }
+      setSessionRemainingSec(null);
+    };
+
+    const activityEvents = ["mousemove", "mousedown", "keydown", "touchstart", "scroll", "click"];
+    activityEvents.forEach((evt) => window.addEventListener(evt, handleUserActivity, { passive: true }));
+
+    // Metodologia B: Verificação contínua de tempo ocioso (Idle Timeout) e limite absoluto de turno
+    const idleCheckInterval = setInterval(() => {
+      const session = dataService.getStoredSession();
+      if (!session) {
+        forceLogoutWithReason("Sua sessão foi encerrada ou removida.");
+        return;
+      }
+
+      const now = Date.now();
+      const idleElapsed = now - session.lastActivityAt;
+      const remainingMs = SESSION_IDLE_TIMEOUT_MS - idleElapsed;
+
+      if (remainingMs <= 0) {
+        forceLogoutWithReason("Sessão encerrada automaticamente por inatividade (15 minutos sem interação).");
+        return;
+      }
+
+      if (remainingMs <= SESSION_WARNING_BEFORE_MS) {
+        setSessionRemainingSec(Math.max(1, Math.ceil(remainingMs / 1000)));
+      } else {
+        setSessionRemainingSec(null);
+      }
+    }, 1000);
+
+    // Metodologia C: Revalidação Criptográfica (SHA-256) e Verificação RBAC / Token Version no Supabase a cada 15s
+    const cloudValidationInterval = setInterval(async () => {
+      const check = await dataService.validateAndRestoreSession();
+      if (!check.valid) {
+        forceLogoutWithReason(check.expiredReason || "Sessão invalidada pelo controle de segurança RBAC.");
+        return;
+      }
+      if (check.session) {
+        if (check.session.role !== userRole) {
+          setUserRole(check.session.role);
+        }
+        setCurrentUser(check.session.user);
+      }
+    }, 15000);
+
+    // Metodologia D: Revalidação imediata ao retornar o foco para a aba/janela (Visibility & Focus)
+    const handleVisibilityOrFocus = async () => {
+      if (document.visibilityState === "visible") {
+        const check = await dataService.validateAndRestoreSession();
+        if (!check.valid) {
+          forceLogoutWithReason(check.expiredReason || "Sessão expirada durante ausência da aba.");
+        } else if (check.session) {
+          setUserRole(check.session.role);
+          setCurrentUser(check.session.user);
+        }
+      }
+    };
+    window.addEventListener("focus", handleVisibilityOrFocus);
+    document.addEventListener("visibilitychange", handleVisibilityOrFocus);
+
+    // Metodologia E: Sincronização Multi-Abas via Storage Event (Logout ou atividade em outra aba)
+    const handleStorageSync = (event: StorageEvent) => {
+      if (event.key === SESSION_STORAGE_KEY) {
+        if (!event.newValue) {
+          setIsAuthenticated(false);
+          setUsername("");
+          setUserRole("VIEWER");
+          setLoginError("Sessão encerrada em outra aba do navegador.");
+        } else {
+          try {
+            const updatedSession = JSON.parse(event.newValue);
+            if (updatedSession?.role && updatedSession.role !== userRole) {
+              setUserRole(updatedSession.role);
+            }
+          } catch {}
+        }
+      }
+    };
+    window.addEventListener("storage", handleStorageSync);
+
+    return () => {
+      activityEvents.forEach((evt) => window.removeEventListener(evt, handleUserActivity));
+      clearInterval(idleCheckInterval);
+      clearInterval(cloudValidationInterval);
+      window.removeEventListener("focus", handleVisibilityOrFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityOrFocus);
+      window.removeEventListener("storage", handleStorageSync);
+    };
+  }, [isAuthenticated, userRole, forceLogoutWithReason]);
+
+  // Função para carregar funcionários e capacetes reais do Supabase (sem SEED DATA)
+  const reloadEmployeesAndHelmets = useCallback(async () => {
+    const [initialEmps, initialHelmets] = await Promise.all([
+      dataService.getEmployees(),
+      dataService.getHelmets()
+    ]);
+
+    setHelmets(initialHelmets || []);
+    setEmployees((prev) => {
+      // Preserva telemetria em tempo real já recebida de ESP32 ativos ao recarregar metadados do banco
+      const merged = (initialEmps || []).map((emp) => {
+        const existing = prev.find((p) => p.id === emp.id);
+        const linkedHelmet = (initialHelmets || []).find(
+          (h) => h.id === emp.assignedHelmetId || h.assignedEmployeeId === emp.id
+        );
+        return {
+          ...emp,
+          assignedHelmetId: emp.assignedHelmetId || linkedHelmet?.id,
+          assignedHelmetSerial: emp.assignedHelmetSerial || linkedHelmet?.serialNumber,
+          status: existing && existing.status !== "OFFLINE" ? existing.status : emp.status,
+          telemetry: existing?.telemetry || emp.telemetry
+        };
+      });
+
+      // Mantém eventuais dispositivos ESP32 autodetectados em execução que ainda não foram salvos na tabela employees
+      const dynamicDevices = prev.filter(
+        (p) => p.status !== "OFFLINE" && !merged.some((m) => m.id === p.id)
+      );
+      return [...merged, ...dynamicDevices];
+    });
+  }, []);
+
+  // Carrega lista inicial de funcionários e capacetes do dataService (Supabase)
+  useEffect(() => {
+    reloadEmployeesAndHelmets();
+  }, [reloadEmployeesAndHelmets]);
+
+  // Atualiza contadores reais de capacetes ativos e desconectados sempre que employees ou helmets mudam
+  useEffect(() => {
+    const activeCount = employees.filter((e) => e.status !== "OFFLINE").length;
+    const totalRegisteredHelmets = Math.max(helmets.length, employees.length);
+    const disconnectedCount = Math.max(0, totalRegisteredHelmets - activeCount);
+
+    setStats((prev) => ({
+      ...prev,
+      activeHelmets: activeCount,
+      disconnectedHelmets: disconnectedCount
+    }));
+
+    if (!selectedEmployeeId && employees.length > 0) {
+      const firstOnline = employees.find((e) => e.status !== "OFFLINE");
+      setSelectedEmployeeId((firstOnline || employees[0]).id);
+    }
+  }, [employees, helmets, selectedEmployeeId]);
+
   // Sincronização Bidirecional em Tempo Real com Supabase
-  // (Atualizações feitas na raiz do Supabase refletem instantaneamente no Safety Monitor)
   useEffect(() => {
     const unsubscribe = dataService.subscribeToRealtime((table, event, record) => {
       console.log(`[Supabase Realtime Sync] Tabela: ${table}, Evento: ${event}`, record);
 
-      if (table === "employees") {
-        setEmployees((prev) => {
-          if (event === "INSERT") {
-            return prev.some(e => e.id === record.id) ? prev : [...prev, record];
-          } else if (event === "UPDATE") {
-            return prev.map(e => e.id === record.id ? { ...e, ...record } : e);
-          } else if (event === "DELETE") {
-            return prev.filter(e => e.id !== record.id);
-          }
-          return prev;
-        });
+      if (table === "employees" || table === "helmets") {
+        reloadEmployeesAndHelmets();
       } else if (table === "users") {
-        // Se for atualização do usuário atual, sincronizar permissões RBAC e dados de perfil ao vivo
-        if (record && record.username === username) {
+        // Se for atualização do usuário atual, sincronizar permissões RBAC, status ativo e dados de perfil ao vivo
+        if (record && record.username?.toLowerCase() === username?.toLowerCase()) {
+          if (record.active === false) {
+            forceLogoutWithReason("Sua conta foi desativada pelo Administrador no banco de dados (RBAC).");
+            return;
+          }
           if (record.role && record.role !== userRole) {
             setUserRole(record.role);
           }
-          setCurrentUser(prev => ({
+          setCurrentUser((prev) => ({
             ...prev,
             firstName: record.firstName !== undefined ? record.firstName : prev.firstName,
             lastName: record.lastName !== undefined ? record.lastName : prev.lastName,
@@ -120,12 +312,12 @@ export default function App() {
           }));
         }
       } else if (table === "accident_events" && event === "INSERT") {
-        setStats(prev => ({
+        setStats((prev) => ({
           ...prev,
           emergenciesToday: prev.emergenciesToday + 1,
           systemStatus: "EMERGENCY"
         }));
-        setActivities(prev => [
+        setActivities((prev) => [
           {
             id: `realtime-acc-${Date.now()}`,
             title: "Alerta de Impacto (Supabase Cloud)",
@@ -143,7 +335,157 @@ export default function App() {
     return () => {
       unsubscribe();
     };
-  }, [username, userRole]);
+  }, [username, userRole, reloadEmployeesAndHelmets, forceLogoutWithReason]);
+
+  // Função inteligente para aplicar pacote de telemetria de um ou múltiplos ESP32 ao operador e capacete correspondentes
+  const applyIncomingEspDevices = useCallback((rawDevices: any[]) => {
+    if (!rawDevices || rawDevices.length === 0) return;
+
+    setEmployees((prevEmployees) => {
+      const updatedList = [...prevEmployees];
+
+      for (const dados of rawDevices) {
+        if (!dados || (dados.aceleracaoG === undefined && !dados.wifi && !dados.ip)) continue;
+
+        const payloadEmpId = (dados.employeeId || dados.operatorId || "").trim();
+        const payloadHelmetId = (dados.helmetId || dados.capaceteId || "").trim();
+        const payloadSerial = (dados.serialNumber || dados.helmetSerial || "").trim();
+        const payloadMac = (dados.macAddress || dados.mac || "").trim().toUpperCase();
+        const payloadIp = (dados.ip || "").trim();
+
+        // 1. Localiza capacete correspondente no cadastro de capacetes
+        const matchedHelmet = helmets.find(
+          (h) =>
+            (payloadHelmetId && h.id.toLowerCase() === payloadHelmetId.toLowerCase()) ||
+            (payloadSerial && h.serialNumber.toLowerCase() === payloadSerial.toLowerCase()) ||
+            (payloadMac && (h.macAddress || "").toUpperCase() === payloadMac)
+        );
+
+        // 2. Localiza operador correspondente na lista
+        let targetIdx = -1;
+        if (payloadEmpId) {
+          targetIdx = updatedList.findIndex((e) => e.id.toLowerCase() === payloadEmpId.toLowerCase());
+        }
+        if (targetIdx === -1 && matchedHelmet) {
+          targetIdx = updatedList.findIndex(
+            (e) =>
+              e.assignedHelmetId === matchedHelmet.id ||
+              e.id === matchedHelmet.assignedEmployeeId
+          );
+        }
+        if (targetIdx === -1 && payloadHelmetId) {
+          targetIdx = updatedList.findIndex(
+            (e) => (e.assignedHelmetId || "").toLowerCase() === payloadHelmetId.toLowerCase()
+          );
+        }
+        if (targetIdx === -1 && payloadMac) {
+          targetIdx = updatedList.findIndex(
+            (e) => (e.telemetry?.macAddress || "").toUpperCase() === payloadMac
+          );
+        }
+        if (targetIdx === -1 && payloadIp) {
+          targetIdx = updatedList.findIndex((e) => e.telemetry?.ip === payloadIp);
+        }
+
+        // Se não tinha vínculo prévio de IP/MAC, vincula ao primeiro operador que ainda não possui outro IP ativo diferente
+        if (targetIdx === -1 && updatedList.length > 0) {
+          targetIdx = updatedList.findIndex(
+            (e) => !e.telemetry?.ip || e.telemetry.ip === payloadIp || e.status === "OFFLINE"
+          );
+        }
+
+        const isImpact =
+          dados.impacto === true || dados.impacto === "true" || Number(dados.pontuacao) >= 60;
+        const latVal =
+          typeof dados.latitude === "number" ? dados.latitude : parseFloat(dados.latitude);
+        const lngVal =
+          typeof dados.longitude === "number" ? dados.longitude : parseFloat(dados.longitude);
+        const hasValidGps =
+          (dados.gpsValido === true || dados.gpsValido === "true") &&
+          !isNaN(latVal) &&
+          !isNaN(lngVal) &&
+          (latVal !== 0 || lngVal !== 0);
+
+        const resolvedHelmetId =
+          matchedHelmet?.id ||
+          payloadHelmetId ||
+          (targetIdx !== -1 ? updatedList[targetIdx].assignedHelmetId : undefined) ||
+          `ESP-${(payloadMac || payloadIp || "NODE").slice(-5).replace(/[^a-zA-Z0-9]/g, "")}`;
+
+        const resolvedHelmetSerial =
+          matchedHelmet?.serialNumber ||
+          payloadSerial ||
+          (targetIdx !== -1 ? updatedList[targetIdx].assignedHelmetSerial : undefined) ||
+          resolvedHelmetId;
+
+        const resolvedMac = payloadMac || matchedHelmet?.macAddress || "";
+
+        const builtTelemetry = {
+          aceleracao: Number(dados.aceleracao) || 0,
+          aceleracaoG: Number(dados.aceleracaoG) || 0,
+          picoAceleracaoG: Number(dados.picoAceleracaoG) || Number(dados.picoG) || 0,
+          picoG: Number(dados.picoG) || Number(dados.picoAceleracaoG) || 0,
+          giroscopioGraus: Number(dados.giroscopioGraus) || 0,
+          pontuacao: Number(dados.pontuacao) || 0,
+          pontosMPU: Number(dados.pontosMPU) || 0,
+          pontosVibracao: Number(dados.pontosVibracao) || 0,
+          pontosSom: Number(dados.pontosSom) || 0,
+          vibracao: dados.vibracao === true || dados.vibracao === "true",
+          som: dados.som === true || dados.som === "true",
+          wifi: dados.wifi || "CONECTADO",
+          ip: payloadIp,
+          macAddress: resolvedMac,
+          helmetId: resolvedHelmetId,
+          helmetSerial: resolvedHelmetSerial,
+          deviceId: dados.deviceId || resolvedHelmetId,
+          satelites: Number(dados.satelites) || 0,
+          altitude: Number(dados.altitude) || 0,
+          hdop: Number(dados.hdop) || 0,
+          gpsValido: dados.gpsValido === true || dados.gpsValido === "true",
+          mapsUrl: dados.mapsUrl || ""
+        };
+
+        if (targetIdx !== -1) {
+          const emp = updatedList[targetIdx];
+          updatedList[targetIdx] = {
+            ...emp,
+            assignedHelmetId: emp.assignedHelmetId || matchedHelmet?.id || resolvedHelmetId,
+            assignedHelmetSerial: emp.assignedHelmetSerial || matchedHelmet?.serialNumber || resolvedHelmetSerial,
+            status: isImpact ? "EMERGENCY" : emp.status === "EMERGENCY" ? "EMERGENCY" : "ONLINE",
+            lat: hasValidGps ? latVal : emp.lat,
+            lng: hasValidGps ? lngVal : emp.lng,
+            lastSeen: Date.now(),
+            telemetry: {
+              ...emp.telemetry,
+              ...builtTelemetry
+            }
+          };
+        } else {
+          // Caso um segundo/terceiro ESP32 envie dados e todos os operadores cadastrados já estejam ocupados com outros IPs/MACs
+          const dynamicId =
+            payloadEmpId ||
+            matchedHelmet?.assignedEmployeeId ||
+            `ESP-${updatedList.length + 1}`;
+          updatedList.push({
+            id: dynamicId,
+            name: dados.employeeName || `Operador IoT (${resolvedHelmetId})`,
+            roleFunction: "Operador Monitorado (Auto-Descoberta ESP32)",
+            department: "Telemetria em Campo",
+            status: isImpact ? "EMERGENCY" : "ONLINE",
+            lat: hasValidGps ? latVal : userLocation?.[0] ?? -23.5505,
+            lng: hasValidGps ? lngVal : userLocation?.[1] ?? -46.6333,
+            lastSeen: Date.now(),
+            battery: matchedHelmet?.battery ?? 100,
+            assignedHelmetId: resolvedHelmetId,
+            assignedHelmetSerial: resolvedHelmetSerial,
+            telemetry: builtTelemetry
+          });
+        }
+      }
+
+      return updatedList;
+    });
+  }, [helmets, userLocation]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -196,11 +538,32 @@ export default function App() {
           try {
             const message: WebSocketMessage = JSON.parse(event.data);
             if (message.type === "INITIAL_STATE" || message.type === "UPDATE") {
-              setEmployees(message.data);
-              if (message.stats) {
-                setStats(message.stats);
+              if (Array.isArray(message.data) && message.data.length > 0) {
+                setEmployees((prev) => {
+                  const mapById = new globalThis.Map<string, Employee>();
+                  prev.forEach((p) => mapById.set(p.id, p));
+                  message.data.forEach((inc) => {
+                    const existing = mapById.get(inc.id);
+                    mapById.set(inc.id, {
+                      ...(existing || {}),
+                      ...inc,
+                      assignedHelmetId: inc.assignedHelmetId || existing?.assignedHelmetId,
+                      assignedHelmetSerial: inc.assignedHelmetSerial || existing?.assignedHelmetSerial,
+                      telemetry: inc.telemetry || existing?.telemetry
+                    });
+                  });
+                  return Array.from(mapById.values());
+                });
               }
-              if (message.activities) {
+              if (message.stats) {
+                setStats((prev) => ({
+                  ...prev,
+                  signalsToday: message.stats!.signalsToday ?? prev.signalsToday,
+                  emergenciesToday: message.stats!.emergenciesToday ?? prev.emergenciesToday,
+                  systemStatus: message.stats!.systemStatus ?? prev.systemStatus
+                }));
+              }
+              if (message.activities && message.activities.length > 0) {
                 setActivities(message.activities);
               }
             }
@@ -225,7 +588,7 @@ export default function App() {
 
     connectWebSocket();
 
-    // Fallback de polling HTTP para garantir telemetria contínua do ESP32 mesmo se o WebSocket oscilar no Vercel / ngrok
+    // Fallback de polling HTTP para garantir telemetria contínua de múltiplos ESP32 mesmo se o WebSocket oscilar no Vercel / ngrok
     const pollingInterval = setInterval(async () => {
       if (!isSubscribed) return;
       try {
@@ -243,52 +606,19 @@ export default function App() {
 
         if (dadosRes && dadosRes.ok) {
           const dados = await dadosRes.json();
-          if (dados && (dados.aceleracaoG !== undefined || dados.wifi)) {
-            setEmployees(prev => prev.map(emp => {
-              if (emp.id === "EMP001") {
-                const isImpact = dados.impacto === true || dados.impacto === "true" || (Number(dados.pontuacao) >= 60);
-                const latVal = typeof dados.latitude === "number" ? dados.latitude : parseFloat(dados.latitude);
-                const lngVal = typeof dados.longitude === "number" ? dados.longitude : parseFloat(dados.longitude);
-                const hasValidGps = (dados.gpsValido === true || dados.gpsValido === "true") && !isNaN(latVal) && !isNaN(lngVal) && (latVal !== 0 || lngVal !== 0);
-
-                return {
-                  ...emp,
-                  status: isImpact ? "EMERGENCY" : (emp.status === "EMERGENCY" ? "EMERGENCY" : "ONLINE"),
-                  lat: hasValidGps ? latVal : emp.lat,
-                  lng: hasValidGps ? lngVal : emp.lng,
-                  lastSeen: Date.now(),
-                  telemetry: {
-                    ...emp.telemetry,
-                    aceleracao: Number(dados.aceleracao) || 0,
-                    aceleracaoG: Number(dados.aceleracaoG) || 0,
-                    picoAceleracaoG: Number(dados.picoAceleracaoG) || Number(dados.picoG) || 0,
-                    picoG: Number(dados.picoG) || 0,
-                    giroscopioGraus: Number(dados.giroscopioGraus) || 0,
-                    pontuacao: Number(dados.pontuacao) || 0,
-                    pontosMPU: Number(dados.pontosMPU) || 0,
-                    pontosVibracao: Number(dados.pontosVibracao) || 0,
-                    pontosSom: Number(dados.pontosSom) || 0,
-                    vibracao: dados.vibracao === true || dados.vibracao === "true",
-                    som: dados.som === true || dados.som === "true",
-                    wifi: dados.wifi || "CONECTADO",
-                    ip: dados.ip || "",
-                    satelites: Number(dados.satelites) || 0,
-                    altitude: Number(dados.altitude) || 0,
-                    hdop: Number(dados.hdop) || 0,
-                    gpsValido: dados.gpsValido === true || dados.gpsValido === "true",
-                    mapsUrl: dados.mapsUrl || ""
-                  }
-                };
-              }
-              return emp;
-            }));
+          if (dados) {
+            if (Array.isArray(dados.devices) && dados.devices.length > 0) {
+              applyIncomingEspDevices(dados.devices);
+            } else if (dados.aceleracaoG !== undefined || dados.wifi) {
+              applyIncomingEspDevices([dados]);
+            }
           }
         }
 
         if (statsRes && statsRes.ok) {
           const statsData = await statsRes.json();
           if (statsData && statsData.signalsToday !== undefined) {
-            setStats(prev => ({
+            setStats((prev) => ({
               ...prev,
               signalsToday: statsData.signalsToday,
               emergenciesToday: statsData.emergenciesToday ?? prev.emergenciesToday,
@@ -307,15 +637,15 @@ export default function App() {
       clearInterval(pollingInterval);
       ws.current?.close();
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, applyIncomingEspDevices, userLocation]);
 
   const handleLogin = async (user: string, pass: string) => {
-    // 1. Tentar autenticação no serviço unificado (Supabase ou LocalStorage)
+    // 1. Autenticação no serviço unificado (Supabase com RBAC + Sessão Assinada)
     const authRes = await dataService.authenticate(user, pass);
     if (authRes.success && authRes.user) {
       setIsAuthenticated(true);
       setUsername(authRes.user.username);
-      setUserRole(authRes.role || "COMPANY_ADMIN");
+      setUserRole(authRes.role || "VIEWER");
       setCurrentUser(authRes.user);
       setLoginError("");
       setLoginSuccessMessage("");
@@ -323,7 +653,7 @@ export default function App() {
       return;
     }
 
-    // 2. Fallback para API do servidor backend se estiver rodando
+    // 2. Fallback para API do servidor backend caso esteja rodando
     try {
       const response = await fetch(`${import.meta.env.VITE_API_URL || ""}/api/login`, {
         method: "POST",
@@ -331,23 +661,26 @@ export default function App() {
         body: JSON.stringify({ username: user, password: pass }),
       });
       const data = await response.json();
-      if (data.success) {
+      if (data.success && data.user) {
+        const loggedProfile: UserProfile = {
+          id: data.user.id,
+          firstName: data.user.firstName || data.user.username,
+          lastName: data.user.lastName || "",
+          username: data.user.username || user,
+          role: data.user.role || "VIEWER",
+          cpf: data.user.cpf || "",
+          position: data.user.position || "",
+          department: data.user.department || "",
+          email: data.user.email || "",
+          phone: data.user.phone || "",
+          active: true,
+          tokenVersion: data.user.tokenVersion || 1
+        };
+        await dataService.createSession(loggedProfile, loggedProfile.tokenVersion || 1);
         setIsAuthenticated(true);
-        setUsername(data.user.username);
-        setUserRole(data.user.role || "COMPANY_ADMIN");
-        if (data.user) {
-          setCurrentUser({
-            firstName: data.user.firstName || "Admin",
-            lastName: data.user.lastName || "User",
-            username: data.user.username || user,
-            role: data.user.role || "COMPANY_ADMIN",
-            cpf: data.user.cpf || "123.456.789-00",
-            position: data.user.position || "Engenheiro de Segurança / Admin",
-            department: data.user.department || "Centro de Operações Industriais (COI)",
-            email: data.user.email || "gbxm.seguranca@industrial.com",
-            phone: data.user.phone || "(11) 98765-4321"
-          });
-        }
+        setUsername(loggedProfile.username);
+        setUserRole(loggedProfile.role);
+        setCurrentUser(loggedProfile);
         setLoginError("");
         setLoginSuccessMessage("");
         setShowForgotPasswordModal(false);
@@ -364,6 +697,7 @@ export default function App() {
       if (res.success) {
         setCurrentUser(updated);
         setUsername(updated.username);
+        await dataService.createSession(updated, updated.tokenVersion || 1);
         return { success: true, message: res.message || "Perfil atualizado e sincronizado com o Supabase com sucesso!" };
       } else {
         return { success: false, message: res.message || "Erro ao atualizar perfil no Supabase." };
@@ -403,25 +737,40 @@ export default function App() {
   };
 
   const handleLogout = () => {
-    setIsAuthenticated(false);
-    setUsername("");
-    setUserRole("VIEWER");
-    setView("HOME");
-    setSelectedEmployeeId(null);
+    forceLogoutWithReason();
   };
 
   const ignoreEmergency = (employeeId: string) => {
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
       ws.current.send(JSON.stringify({ type: "IGNORE_EMERGENCY", employeeId }));
     }
+    setEmployees((prev) =>
+      prev.map((e) => (e.id === employeeId && e.status === "EMERGENCY" ? { ...e, status: "ONLINE" } : e))
+    );
   };
 
   const reloadEmployees = async () => {
-    const emps = await dataService.getEmployees();
-    setEmployees(emps);
+    await reloadEmployeesAndHelmets();
   };
 
-  const selectedEmployee = employees.find(e => e.id === selectedEmployeeId) || null;
+  const selectedEmployee = employees.find((e) => e.id === selectedEmployeeId) || null;
+
+  // Tela de carregamento rápida enquanto valida a sessão no F5 / Ctrl+R para não piscar a tela de Login
+  if (isRestoringSession) {
+    return (
+      <div className="min-h-screen w-full bg-zinc-950 flex flex-col items-center justify-center p-6 text-white font-sans">
+        <div className="w-12 h-12 rounded-2xl bg-yellow-500/10 border border-yellow-500/30 flex items-center justify-center mb-4">
+          <RefreshCw className="w-6 h-6 text-yellow-500 animate-spin" />
+        </div>
+        <p className="text-sm font-bold uppercase tracking-widest text-zinc-300">
+          Validando Sessão Segura & RBAC...
+        </p>
+        <p className="text-xs text-zinc-500 mt-1">
+          Verificando assinatura criptográfica e permissões no Supabase
+        </p>
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return (
@@ -479,15 +828,57 @@ export default function App() {
 
   return (
     <>
+      {/* Banner de Alerta de Inatividade (2 minutos antes de derrubar a sessão) */}
+      {sessionRemainingSec !== null && (
+        <div
+          role="alert"
+          aria-live="assertive"
+          className="fixed top-4 left-1/2 -translate-x-1/2 z-[2000] w-[92%] max-w-xl bg-amber-950/95 backdrop-blur-xl border border-amber-500/50 rounded-2xl p-4 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-3 text-white"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center shrink-0">
+              <Clock className="w-5 h-5 text-amber-400 animate-pulse" />
+            </div>
+            <div>
+              <h4 className="text-xs font-bold uppercase tracking-wider text-amber-300 flex items-center gap-1.5">
+                <ShieldAlert className="w-3.5 h-3.5" />
+                Alerta de Segurança por Inatividade
+              </h4>
+              <p className="text-xs text-zinc-300 mt-0.5">
+                Sua sessão RBAC será encerrada em{" "}
+                <strong className="text-amber-400 font-mono">
+                  {Math.floor(sessionRemainingSec / 60)}m {String(sessionRemainingSec % 60).padStart(2, "0")}s
+                </strong>{" "}
+                por falta de interação.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => {
+              lastActivityTouchRef.current = Date.now();
+              void dataService.touchSessionActivity();
+              setSessionRemainingSec(null);
+            }}
+            className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs uppercase tracking-wider shrink-0 transition-all cursor-pointer"
+          >
+            Manter Conectado
+          </button>
+        </div>
+      )}
+
       {view === "HOME" ? (
         <Dashboard 
           username={username}
           userRole={userRole}
           employees={employees}
+          helmets={helmets}
           stats={stats}
           activities={activities}
           currentUser={currentUser}
-          onNavigateToMap={() => setView("MAP")} 
+          onNavigateToMap={(empId?: string) => {
+            if (empId) setSelectedEmployeeId(empId);
+            setView("MAP");
+          }} 
           onLogout={handleLogout}
           onUpdateUser={handleUpdateUser}
           onOpenHelmetModal={() => setShowHelmetModal(true)}
@@ -523,6 +914,7 @@ export default function App() {
             <div className={`md:block ${showMobileSidebar ? "block" : "hidden md:block"}`}>
               <Sidebar 
                 employees={employees} 
+                helmets={helmets}
                 selectedEmployeeId={selectedEmployeeId} 
                 onSelectEmployee={(id) => {
                   setSelectedEmployeeId(id);
@@ -539,6 +931,7 @@ export default function App() {
             <div className="h-[50vh] min-h-[380px] lg:h-[60vh] relative border-b border-zinc-800 w-full">
               <Map 
                 employees={employees} 
+                helmets={helmets}
                 selectedEmployeeId={selectedEmployeeId} 
                 onSelectEmployee={setSelectedEmployeeId} 
                 userLocation={userLocation}
@@ -608,7 +1001,7 @@ export default function App() {
                             )}
                           </div>
                           <p className="text-[10px] text-zinc-500 mt-0.5">
-                            {emp.name} ({emp.id}) • {new Date().toLocaleTimeString('pt-BR')}
+                            {emp.name} ({emp.id}) • Capacete: {emp.assignedHelmetId || "Não vinculado"} • {new Date().toLocaleTimeString('pt-BR')}
                           </p>
                         </div>
                       </div>

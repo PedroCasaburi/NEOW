@@ -1,8 +1,8 @@
 import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
-import { Employee, UserRole } from "../types";
+import { Employee, Helmet, UserRole } from "../types";
 import { useEffect } from "react";
-import { Activity, Radio, AlertTriangle, ShieldCheck, Wifi, MapPin } from "lucide-react";
+import { MapPin, HardHat } from "lucide-react";
 
 // Custom Helmet Icon
 const createHelmetIcon = (status: string) => {
@@ -44,16 +44,29 @@ function MapUpdater({ center }: { center: [number, number] }) {
 
 interface MapProps {
   employees: Employee[];
+  helmets?: Helmet[];
   selectedEmployeeId: string | null;
   onSelectEmployee: (id: string) => void;
   userLocation: [number, number] | null;
   userRole?: UserRole;
 }
 
-export default function Map({ employees, selectedEmployeeId, onSelectEmployee, userLocation, userRole }: MapProps) {
+export default function Map({ employees, helmets = [], selectedEmployeeId, onSelectEmployee, userLocation, userRole }: MapProps) {
   // Mostra no mapa EXCLUSIVAMENTE capacetes conectados
   const connectedEmployees = employees.filter(e => e.status !== "OFFLINE");
   const selectedEmployee = connectedEmployees.find(e => e.id === selectedEmployeeId) || connectedEmployees[0] || null;
+
+  const resolveHelmetLabel = (emp: Employee) => {
+    const matched = helmets.find(
+      (h) =>
+        (emp.assignedHelmetId && h.id.toLowerCase() === emp.assignedHelmetId.toLowerCase()) ||
+        (emp.telemetry?.helmetId && h.id.toLowerCase() === emp.telemetry.helmetId.toLowerCase()) ||
+        h.assignedEmployeeId === emp.id
+    );
+    const hId = matched?.id || emp.assignedHelmetId || emp.telemetry?.helmetId || "ESP32";
+    const hSerial = matched?.serialNumber || emp.assignedHelmetSerial || emp.telemetry?.helmetSerial || "";
+    return hSerial ? `${hId} (${hSerial})` : hId;
+  };
   
   const center: [number, number] = selectedEmployee 
     ? [selectedEmployee.lat, selectedEmployee.lng] 
@@ -110,11 +123,12 @@ export default function Map({ employees, selectedEmployeeId, onSelectEmployee, u
             }}
           >
             <Popup>
-              <div className="p-2 min-w-[200px] text-zinc-900 font-sans">
+              <div className="p-2 min-w-[210px] text-zinc-900 font-sans">
                 <div className="flex justify-between items-start border-b pb-1 mb-2">
                   <div>
                     <h3 className="font-bold text-sm text-zinc-900">{emp.name}</h3>
-                    <p className="text-[10px] text-zinc-500 font-mono">ID: {emp.id}</p>
+                    <p className="text-[10px] text-zinc-500 font-mono">Operador: {emp.id}</p>
+                    <p className="text-[10px] text-amber-700 font-mono font-bold">Capacete: {resolveHelmetLabel(emp)}</p>
                   </div>
                   <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded text-white ${
                     emp.status === "EMERGENCY" ? "bg-red-600" :
@@ -148,7 +162,7 @@ export default function Map({ employees, selectedEmployeeId, onSelectEmployee, u
                     </div>
                     <div className="flex justify-between text-[10px] text-zinc-500 pt-1 border-t">
                       <span>{userRole === "MASTER" ? "IP ESP32:" : "Conexão IoT:"}</span>
-                      <span className="font-mono">{userRole === "MASTER" ? (emp.telemetry.ip || "192.168.0.122") : "Rede Protegida"}</span>
+                      <span className="font-mono">{userRole === "MASTER" ? (emp.telemetry.ip || "N/D") : "Rede Protegida"}</span>
                     </div>
                   </div>
                 ) : (
@@ -174,7 +188,11 @@ export default function Map({ employees, selectedEmployeeId, onSelectEmployee, u
                 }`} />
                 <h3 className="font-bold text-sm text-zinc-100">{selectedEmployee.name}</h3>
               </div>
-              <p className="text-[10px] text-zinc-400 font-mono">Dispositivo: {selectedEmployee.id}</p>
+              <p className="text-[10px] text-zinc-400 font-mono">Operador: {selectedEmployee.id}</p>
+              <p className="text-[10px] text-yellow-400 font-mono flex items-center gap-1 mt-0.5">
+                <HardHat className="w-3 h-3" />
+                Capacete: {resolveHelmetLabel(selectedEmployee)}
+              </p>
             </div>
             <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${
               selectedEmployee.status === "EMERGENCY" ? "bg-red-500/20 text-red-400 border-red-500/30" :
@@ -229,7 +247,7 @@ export default function Map({ employees, selectedEmployeeId, onSelectEmployee, u
                   <div className="flex justify-between items-center pt-1 border-t border-white/5">
                     <span className="text-zinc-400 text-[10px] uppercase font-semibold">Wi-Fi / IP Local:</span>
                     <span className="text-[10px] font-mono text-zinc-300">
-                      {selectedEmployee.telemetry.ip || "192.168.0.122"}
+                      {selectedEmployee.telemetry.ip || "N/D"}
                     </span>
                   </div>
                 )}

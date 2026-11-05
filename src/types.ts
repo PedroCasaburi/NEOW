@@ -23,6 +23,20 @@ export interface EmployeeTelemetry {
   mapsUrl?: string;
   wifi?: string;
   ip?: string;
+  macAddress?: string;
+  helmetId?: string;
+  helmetSerial?: string;
+  deviceId?: string;
+}
+
+export interface ActiveSession {
+  username: string;
+  role: UserRole;
+  user: UserProfile;
+  loginAt: number;
+  lastActivityAt: number;
+  tokenVersion: number;
+  signature: string;
 }
 
 export interface Helmet {
@@ -85,6 +99,7 @@ export interface RecentActivity {
 }
 
 export interface UserProfile {
+  id?: string;
   firstName: string;
   lastName: string;
   username: string;
@@ -94,6 +109,8 @@ export interface UserProfile {
   department: string;
   email: string;
   phone: string;
+  active?: boolean;
+  tokenVersion?: number;
 }
 
 export interface UserRecord extends UserProfile {

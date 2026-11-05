@@ -16,7 +16,7 @@ try {
 } catch {}
 
 const apiKey = process.env.RESEND_API_KEY || envKey;
-const fromEmail = process.env.RESEND_FROM_EMAIL || envFrom || 'Industrial Safety Monitor <onboarding@resend.dev>';
+const fromEmail = 'Industrial Safety Monitor <suporte@mail.institutoicode.com.br>';
 
 console.log('\n========================================');
 console.log('   TESTE DO RESEND API');
@@ -34,10 +34,9 @@ async function testResend() {
     console.log('✅ API Key válida!');
     console.log('Domínios verificados:', JSON.stringify(domains?.data?.data?.map(d => d.name) || []));
     
-    // 2. Testar envio para um e-mail real (usando onboarding@resend.dev que é o default)
-    // IMPORTANTE: com conta gratuita sem domínio verificado, só pode enviar para o e-mail da conta
+    // 2. Testar envio com o domínio verificado oficial
     const result = await resend.emails.send({
-      from: fromEmail,
+      from: 'Industrial Safety Monitor <suporte@mail.institutoicode.com.br>',
       to: ['pedrocasaburi@hotmail.com'], // Apenas o e-mail do dono da conta funciona sem domínio verificado
       subject: '[TESTE] Industrial Safety Monitor - Conectividade Resend OK',
       html: `

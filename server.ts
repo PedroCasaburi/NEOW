@@ -1,3 +1,28 @@
+/**
+ * ============================================================================
+ * INDUSTRIAL SAFETY MONITOR - SERVIDOR BACKEND PRINCIPAL (API & TELEMETRIA)
+ * ============================================================================
+ * [GUIA PARA O SQUAD DE DESENVOLVIMENTO]
+ * 
+ * ARQUITETURA DESTE SERVIDOR:
+ * Este arquivo atua como o Nó Concentrador Local e Gateway de Telemetria IoT do sistema:
+ * 1. Express API (Porta 3000): Endpoints REST para autenticação, configurações e ingestão de sensores.
+ * 2. WebSocket Server (ws): Transmissão com latência sub-100ms para dashboards em tempo real (COI).
+ * 3. Vite Middleware (Dev) / Static SPA (Prod): Serve o frontend React otimizado.
+ * 4. Dual-Persistence / Resiliência: Persiste tanto no banco PostgreSQL do Supabase quanto
+ *    mantém réplica operacional em memória RAM para manter o sistema ativo mesmo com a internet oscilando.
+ * 5. Cibersegurança & LGPD: Cifragem AES-256-GCM para dados sensíveis, Rate Limiting contra DoS/Brute Force,
+ *    hashing salteado para credenciais e cabeçalhos defensivos HTTP (OWASP).
+ * 
+ * FLUXO DE TELEMETRIA:
+ * ESP32 (Hardware IoT) ---> POST /api/dados (HTTP) ---> applyESP32Data()
+ *                                                            |
+ *     +------------------------------------------------------+------------------------------------------------------+
+ *     |                                                      |                                                      |
+ * WebSocket Broadcast (Clientes Locais)            Persistência Supabase (Cloud)                      Detecção de Acidente
+ * ============================================================================
+ */
+
 import express from "express";
 import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
@@ -17,7 +42,8 @@ const __dirname = path.dirname(__filename);
 
 const PORT = 3000;
 
-// Inicialização do Supabase para persistência dos dados do ESP32
+// [DEV NOTE]: Conexão Híbrida com Supabase.
+// Se as variáveis estiverem ausentes, o servidor entra automaticamente em modo Standalone/Em-Memória.
 const supabaseUrl = (process.env.VITE_SUPABASE_URL || "").trim();
 const supabaseKey = (process.env.VITE_SUPABASE_ANON_KEY || "").trim();
 let supabase: SupabaseClient | null = null;
@@ -35,7 +61,9 @@ if (supabaseUrl && supabaseKey && !supabaseUrl.includes("seu-projeto")) {
 // INTEGRAÇÃO RESEND (E-MAIL TRANSACIONAL) & SEGURANÇA OTP
 // ------------------------------------------------------------
 const resendApiKey = (process.env.RESEND_API_KEY || "").trim();
-const resendFromEmail = (process.env.RESEND_FROM_EMAIL || "Industrial Safety Monitor <onboarding@resend.dev>").trim();
+const OFFICIAL_FROM_EMAIL = 'Industrial Safety Monitor <suporte@mail.institutoicode.com.br>';
+const envFromEmail = (process.env.RESEND_FROM_EMAIL || "").trim();
+const resendFromEmail = envFromEmail && !envFromEmail.includes("onboarding@resend.dev") ? envFromEmail : OFFICIAL_FROM_EMAIL;
 let resend: Resend | null = null;
 
 if (resendApiKey && !resendApiKey.includes("sua_chave") && resendApiKey.startsWith("re_")) {
@@ -240,31 +268,85 @@ function getLocalIpAddresses() {
   return addresses;
 }
 
-import { Employee, EmployeeTelemetry, SystemStats, RecentActivity } from "./src/types";
+import { Employee, EmployeeTelemetry, Helmet, SystemStats, RecentActivity, UserRole } from "./src/types";
 
-// EMP001 é o ESP32 real conectado. Os demais representam capacetes cadastrados no sistema atualmente desligados (OFFLINE)
-let employees: Employee[] = [
-  { id: "EMP001", name: "Gabriel Araújo", lat: -23.5505, lng: -46.6333, status: "ONLINE", lastSeen: Date.now(), battery: 95 },
-  { id: "EMP002", name: "Gustavo Felix", lat: -23.5515, lng: -46.6343, status: "OFFLINE", lastSeen: 0, battery: 0 },
-  { id: "EMP003", name: "Fabio Akira", lat: -23.5525, lng: -46.6353, status: "OFFLINE", lastSeen: 0, battery: 0 },
-  { id: "EMP004", name: "Fabio Pelissari", lat: -23.5535, lng: -46.6363, status: "OFFLINE", lastSeen: 0, battery: 0 },
-  { id: "EMP005", name: "Augusto Melo", lat: -23.5545, lng: -46.6373, status: "OFFLINE", lastSeen: 0, battery: 0 },
-];
+// Estado real sincronizado a partir do Supabase (sem dados fictícios de seed)
+let employees: Employee[] = [];
+let helmets: Helmet[] = [];
 
+// Mapa de pacotes recentes por dispositivo ESP32 (suporte a múltiplos capacetes simultâneos)
+const activeEspDevices = new Map<string, { data: any; updatedAt: string; employeeId: string; helmetId?: string }>();
 let latestESP32Data: any = null;
 let ultimaAtualizacao: string | null = null;
 let signalsReceivedToday = 0;
 let emergenciesCountToday = 0;
-let esp32HasConnected = false;
+const connectedEspIds = new Set<string>();
 let recentActivities: RecentActivity[] = [
   {
     id: "init-1",
     title: "Sistema Inicializado",
-    description: "Servidor de monitoramento industrial ativo na porta 3000",
-    timestamp: Date.now() - 30000,
+    description: "Servidor de monitoramento industrial ativo e sincronizado ao Supabase",
+    timestamp: Date.now(),
     type: "INFO"
   }
 ];
+
+async function syncStateFromSupabase() {
+  if (!supabase) return;
+  try {
+    const [{ data: dbEmps, error: eErr }, { data: dbHelms, error: hErr }] = await Promise.all([
+      supabase.from("employees").select("*").order("id", { ascending: true }),
+      supabase.from("helmets").select("*").order("id", { ascending: true })
+    ]);
+
+    if (!hErr && dbHelms) {
+      helmets = dbHelms.map(h => ({
+        id: h.id,
+        serialNumber: h.serial_number,
+        macAddress: h.mac_address,
+        firmwareVersion: h.firmware_version,
+        battery: h.battery,
+        status: h.status,
+        lastCalibration: h.last_calibration ? h.last_calibration.split("T")[0] : undefined,
+        nextInspection: h.next_inspection ? h.next_inspection.split("T")[0] : undefined,
+        assignedEmployeeId: h.assigned_employee_id,
+        companyId: h.company_id
+      }));
+    }
+
+    if (!eErr && dbEmps) {
+      const now = Date.now();
+      employees = dbEmps.map(e => {
+        const prev = employees.find(p => p.id === e.id);
+        const linkedHelm = helmets.find(h => h.id === e.assigned_helmet_id || h.assignedEmployeeId === e.id);
+        const lastSeenMs = prev && now - prev.lastSeen < 30000 ? prev.lastSeen : Number(e.last_seen) || 0;
+        const isRecentlyActive = lastSeenMs > 0 && now - lastSeenMs < 30000;
+        const resolvedStatus = prev && isRecentlyActive ? prev.status : (isRecentlyActive ? e.status : "OFFLINE");
+
+        return {
+          id: e.id,
+          name: e.name,
+          cpf: decryptCPFNode(e.cpf || ""),
+          matricula: e.matricula,
+          roleFunction: e.role_function,
+          department: e.department,
+          shift: e.shift,
+          emergencyContact: e.emergency_contact,
+          status: resolvedStatus,
+          lat: prev?.telemetry?.gpsValido ? prev.lat : (typeof e.lat === "number" ? e.lat : -23.5505),
+          lng: prev?.telemetry?.gpsValido ? prev.lng : (typeof e.lng === "number" ? e.lng : -46.6333),
+          lastSeen: lastSeenMs,
+          battery: typeof e.battery === "number" ? e.battery : (linkedHelm?.battery ?? 100),
+          assignedHelmetId: e.assigned_helmet_id || linkedHelm?.id || null,
+          assignedHelmetSerial: linkedHelm?.serialNumber || null,
+          telemetry: prev?.telemetry
+        };
+      });
+    }
+  } catch (err) {
+    console.warn("[Supabase Server] Falha ao sincronizar estado com banco de dados:", err);
+  }
+}
 
 function getSystemStats(): SystemStats {
   const activeCount = employees.filter(e => e.status !== "OFFLINE").length;
@@ -281,7 +363,35 @@ function getSystemStats(): SystemStats {
 
 async function startServer() {
   const app = express();
+  app.set("trust proxy", true);
   app.use(express.json());
+
+  const extractClientIp = (req: express.Request): string => {
+    const candidates = [
+      req.headers["x-vercel-forwarded-for"],
+      req.headers["cf-connecting-ip"],
+      req.headers["x-real-ip"],
+      req.headers["x-forwarded-for"],
+      req.headers["x-client-ip"],
+      req.ip,
+      req.socket?.remoteAddress
+    ];
+    for (const raw of candidates) {
+      if (!raw) continue;
+      const val = Array.isArray(raw) ? raw[0] : String(raw);
+      const firstIp = val.split(",")[0].trim().replace(/^::ffff:/, "");
+      if (firstIp && firstIp !== "unknown") return firstIp;
+    }
+    return "0.0.0.0";
+  };
+
+  const buildClientRateKey = (req: express.Request, accountTarget?: string): string => {
+    const ip = extractClientIp(req);
+    const ua = String(req.headers["user-agent"] || "unknown-ua").slice(0, 120);
+    const uaHash = crypto.createHash("sha256").update(ua).digest("hex").slice(0, 10);
+    const target = (accountTarget || req.body?.email || req.body?.username || "anonymous").toString().trim().toLowerCase();
+    return `${ip}:${uaHash}:${target}`;
+  };
 
   // ------------------------------------------------------------
   // CIBERSEGURANÇA: CABEÇALHOS DE PROTEÇÃO HTTP (OWASP)
@@ -309,7 +419,7 @@ async function startServer() {
   const requestRates = new Map<string, { count: number; resetAt: number }>();
   const rateLimit = (maxRequests: number, windowMs: number) => {
     return (req: express.Request, res: express.Response, next: express.NextFunction) => {
-      const ip = req.ip || "127.0.0.1";
+      const ip = buildClientRateKey(req);
       const now = Date.now();
       const current = requestRates.get(ip);
       if (!current || now > current.resetAt) {
@@ -330,6 +440,7 @@ async function startServer() {
     firstName: string;
     lastName: string;
     username: string;
+    role?: UserRole;
     cpf: string;
     position: string;
     department: string;
@@ -340,57 +451,54 @@ async function startServer() {
     last_password_change?: string;
   }
 
-  const users: UserData[] = [
-    { 
-      firstName: "Pedro", 
-      lastName: "Casaburi", 
-      username: "pedrocasaburi", 
-      cpf: "000.111.222-33", 
-      position: "Engenheiro de Sistemas / Desenvolvedor", 
-      department: "Diretoria de Tecnologia & Inovação", 
-      email: "pedrocasaburi@hotmail.com", 
-      phone: "(11) 99999-0000", 
-      password: "123456" 
-    },
-    { 
-      firstName: "Administrador", 
-      lastName: "Master", 
-      username: "adminmaster", 
-      cpf: "000.111.222-33", 
-      position: "Engenheiro Chefe de Sistemas / Dono", 
-      department: "Diretoria de Tecnologia & Inovação", 
-      email: "adminmaster@industrial.com", 
-      phone: "(11) 99999-0000", 
-      password: "123456" 
-    },
-    { 
-      firstName: "Gabriel", 
-      lastName: "Araújo", 
-      username: "Gbxm", 
-      cpf: "123.456.789-00", 
-      position: "Engenheiro de Segurança / Admin COI", 
-      department: "Centro de Operações Industriais (COI)", 
-      email: "gbxm.seguranca@industrial.com", 
-      phone: "(11) 98765-4321", 
-      password: "123456" 
-    },
-    { 
-      firstName: "Auditor", 
-      lastName: "Visualizador", 
-      username: "visualizador", 
-      cpf: "999.888.777-66", 
-      position: "Técnico de Monitoramento / Fiscal", 
-      department: "Auditoria Externa de Segurança", 
-      email: "visualizador@industrial.com", 
-      phone: "(11) 91234-5678", 
-      password: "123456" 
-    }
-  ];
+  // Usuários carregados a partir do banco de dados real (sem seed fictício)
+  const users: UserData[] = [];
 
-  app.post("/api/login", rateLimit(15, 60000), (req, res) => {
+  // Sincronização inicial e periódica com o Supabase
+  await syncStateFromSupabase();
+  setInterval(syncStateFromSupabase, 10000);
+
+  app.post("/api/login", rateLimit(10, 15 * 60 * 1000), async (req, res) => {
     const { username, password } = req.body;
+    const cleanInput = (username || "").trim();
     const hashed = hashPasswordNode(password || "");
-    const user = users.find(u => u.username === username && (u.password === password || u.password === hashed));
+
+    if (supabase) {
+      try {
+        const isEmail = cleanInput.includes("@");
+        const query = supabase.from("users").select("*");
+        const { data: dbUser, error } = isEmail
+          ? await query.ilike("email", cleanInput).maybeSingle()
+          : await query.eq("username", cleanInput).maybeSingle();
+
+        if (!error && dbUser) {
+          if (!dbUser.active) {
+            return res.status(403).json({ success: false, message: "Usuário desativado pelo administrador." });
+          }
+          if (dbUser.password === password || dbUser.password === hashed) {
+            if (dbUser.password === password) {
+              await supabase.from("users").update({ password: hashed }).eq("id", dbUser.id);
+            }
+            return res.json({
+              success: true,
+              user: {
+                firstName: dbUser.first_name,
+                lastName: dbUser.last_name,
+                username: dbUser.username,
+                role: dbUser.role,
+                cpf: decryptCPFNode(dbUser.cpf || ""),
+                position: dbUser.position || "",
+                department: dbUser.department || "",
+                email: dbUser.email || "",
+                phone: dbUser.phone || ""
+              }
+            });
+          }
+        }
+      } catch {}
+    }
+
+    const user = users.find(u => u.username === cleanInput && (u.password === password || u.password === hashed));
     if (user) {
       const { password: _, ...safeUser } = user;
       safeUser.cpf = decryptCPFNode(safeUser.cpf || "");
@@ -508,7 +616,7 @@ async function startServer() {
   // ------------------------------------------------------------
   const forgotPasswordRates = new Map<string, { count: number; resetAt: number }>();
   const forgotPasswordRateLimit = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const ip = req.ip || req.socket.remoteAddress || "127.0.0.1";
+    const ip = buildClientRateKey(req);
     const now = Date.now();
     const current = forgotPasswordRates.get(ip);
     if (!current || now > current.resetAt) {
@@ -638,7 +746,7 @@ async function startServer() {
           try {
             const htmlContent = buildOtpEmailHtml(userName, otpCode);
             await resend.emails.send({
-              from: resendFromEmail,
+              from: 'Industrial Safety Monitor <suporte@mail.institutoicode.com.br>',
               to: [normalizedEmail],
               subject: `Código de Recuperação: ${otpCode} - Industrial Safety Monitor`,
               html: htmlContent
@@ -672,7 +780,7 @@ async function startServer() {
 
   const resetPasswordRates = new Map<string, { count: number; resetAt: number }>();
   const resetPasswordRateLimit = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const ip = req.ip || req.socket.remoteAddress || "127.0.0.1";
+    const ip = buildClientRateKey(req);
     const now = Date.now();
     const current = resetPasswordRates.get(ip);
     if (!current || now > current.resetAt) {
@@ -981,38 +1089,117 @@ async function startServer() {
   });
 
   // ============================================================
-  // PROCESSAMENTO DE TELEMETRIA DO ESP32
+  // PROCESSAMENTO INTELIGENTE MULTI-ESP32 & RESOLUÇÃO DE CAPACETE/OPERADOR
   // ============================================================
+  function resolveTargetEmployeeAndHelmet(dados: any, clientIp?: string): { empIndex: number; helmet?: Helmet } {
+    const incomingMac = (dados.macAddress || dados.mac || "").trim().toUpperCase();
+    const incomingHelmetId = (dados.helmetId || dados.capaceteId || "").trim();
+    const incomingSerial = (dados.serialNumber || dados.helmetSerial || "").trim();
+    const incomingEmpId = (dados.employeeId || dados.operadorId || "").trim();
+    const incomingIp = (dados.ip || clientIp || "").trim();
+
+    // 1. Tentar encontrar o capacete correspondente pelo MAC, ID ou Serial
+    let matchedHelmet: Helmet | undefined;
+    if (incomingMac) {
+      matchedHelmet = helmets.find(h => h.macAddress?.trim().toUpperCase() === incomingMac);
+    }
+    if (!matchedHelmet && incomingHelmetId) {
+      matchedHelmet = helmets.find(h => h.id.toLowerCase() === incomingHelmetId.toLowerCase());
+    }
+    if (!matchedHelmet && incomingSerial) {
+      matchedHelmet = helmets.find(h => h.serialNumber?.toLowerCase() === incomingSerial.toLowerCase());
+    }
+
+    // 2. Se encontrou o capacete, localizar o operador vinculado a ele
+    if (matchedHelmet) {
+      const byHelmIdx = employees.findIndex(
+        e => e.id === matchedHelmet!.assignedEmployeeId || e.assignedHelmetId === matchedHelmet!.id
+      );
+      if (byHelmIdx !== -1) {
+        return { empIndex: byHelmIdx, helmet: matchedHelmet };
+      }
+    }
+
+    // 3. Tentar localizar diretamente por employeeId enviado no pacote JSON
+    if (incomingEmpId) {
+      const byEmpIdx = employees.findIndex(e => e.id.toLowerCase() === incomingEmpId.toLowerCase());
+      if (byEmpIdx !== -1) {
+        const linkedH = helmets.find(h => h.id === employees[byEmpIdx].assignedHelmetId || h.assignedEmployeeId === employees[byEmpIdx].id);
+        return { empIndex: byEmpIdx, helmet: linkedH };
+      }
+    }
+
+    // 4. Tentar localizar um operador que já estava recebendo dados deste mesmo IP/MAC
+    if (incomingIp || incomingMac) {
+      const byActiveIpIdx = employees.findIndex(
+        e => (incomingMac && e.telemetry?.macAddress === incomingMac) || (incomingIp && e.telemetry?.ip === incomingIp)
+      );
+      if (byActiveIpIdx !== -1) {
+        const linkedH = helmets.find(h => h.id === employees[byActiveIpIdx].assignedHelmetId || h.assignedEmployeeId === employees[byActiveIpIdx].id);
+        return { empIndex: byActiveIpIdx, helmet: linkedH };
+      }
+    }
+
+    // 5. Se for um segundo/novo ESP32 (IP/MAC diferente dos já conectados), alocar automaticamente ao próximo operador com capacete disponível ou próximo operador cadastrado
+    const onlineWithDifferentSource = employees.filter(
+      e => e.status !== "OFFLINE" && e.telemetry?.ip && incomingIp && e.telemetry.ip !== incomingIp
+    );
+    if (onlineWithDifferentSource.length > 0) {
+      const nextOfflineWithHelmet = employees.findIndex(e => e.status === "OFFLINE" && e.assignedHelmetId);
+      if (nextOfflineWithHelmet !== -1) {
+        const linkedH = helmets.find(h => h.id === employees[nextOfflineWithHelmet].assignedHelmetId);
+        return { empIndex: nextOfflineWithHelmet, helmet: linkedH };
+      }
+      const nextOfflineIdx = employees.findIndex(e => e.status === "OFFLINE");
+      if (nextOfflineIdx !== -1) {
+        const linkedH = helmets.find(h => h.id === employees[nextOfflineIdx].assignedHelmetId || h.assignedEmployeeId === employees[nextOfflineIdx].id);
+        return { empIndex: nextOfflineIdx, helmet: linkedH };
+      }
+    }
+
+    // 6. Fallback padrão: EMP001 ou primeiro operador cadastrado no banco
+    let fallbackIdx = employees.findIndex(e => e.id === "EMP001");
+    if (fallbackIdx === -1 && employees.length > 0) fallbackIdx = 0;
+    const fallbackHelm = fallbackIdx !== -1
+      ? helmets.find(h => h.id === employees[fallbackIdx].assignedHelmetId || h.assignedEmployeeId === employees[fallbackIdx].id)
+      : undefined;
+
+    return { empIndex: fallbackIdx, helmet: fallbackHelm };
+  }
+
   function applyESP32Data(dados: any, clientIp?: string) {
     if (!dados || typeof dados !== "object") return;
     latestESP32Data = dados;
     ultimaAtualizacao = new Date().toISOString();
     signalsReceivedToday++;
 
-    if (!esp32HasConnected) {
-      esp32HasConnected = true;
-      recentActivities.unshift({
-        id: `conn-${Date.now()}`,
-        title: "ESP32 Conectado",
-        description: `Capacete EMP001 online na rede Wi-Fi (${dados.ip || clientIp || "192.168.0.122"})`,
-        timestamp: Date.now(),
-        type: "CONNECT",
-        employeeId: "EMP001",
-        employeeName: "Gabriel Araújo"
-      });
-      if (recentActivities.length > 20) recentActivities.pop();
-    }
+    const { empIndex, helmet: matchedHelmet } = resolveTargetEmployeeAndHelmet(dados, clientIp);
+    const deviceKey = (dados.macAddress || dados.helmetId || dados.employeeId || dados.ip || clientIp || `ESP-${empIndex >= 0 ? employees[empIndex].id : "01"}`).trim();
 
-    console.log(`\n[ESP32] Pacote #${signalsReceivedToday} recebido em ${ultimaAtualizacao}:`);
-    console.log(`  Wifi: ${dados.wifi} | IP: ${dados.ip || clientIp || "N/A"}`);
+    console.log(`\n[ESP32] Pacote #${signalsReceivedToday} (${deviceKey}) recebido em ${ultimaAtualizacao}:`);
+    console.log(`  Wifi: ${dados.wifi} | IP: ${dados.ip || clientIp || "N/A"} | MAC: ${dados.macAddress || "N/A"}`);
     console.log(`  Aceleração: ${dados.aceleracaoG}g | Pico: ${dados.picoG}g | Pontuação: ${dados.pontuacao}`);
     console.log(`  Impacto: ${dados.impacto} | GPS Válido: ${dados.gpsValido} (${dados.latitude}, ${dados.longitude})`);
 
-    // Atualiza os dados do funcionário EMP001 (Gabriel Araújo / Gbxm)
-    const empIndex = employees.findIndex(e => e.id === "EMP001");
     if (empIndex !== -1) {
       const currentEmp = employees[empIndex];
       const now = Date.now();
+      const resolvedHelmetId = matchedHelmet?.id || currentEmp.assignedHelmetId || dados.helmetId || "HELM-001";
+      const resolvedHelmetSerial = matchedHelmet?.serialNumber || currentEmp.assignedHelmetSerial || dados.serialNumber || "CAP-2026-ESP";
+
+      if (!connectedEspIds.has(deviceKey)) {
+        connectedEspIds.add(deviceKey);
+        recentActivities.unshift({
+          id: `conn-${Date.now()}-${deviceKey}`,
+          title: `ESP32 Conectado (${resolvedHelmetId})`,
+          description: `Capacete ${resolvedHelmetSerial} vinculado a ${currentEmp.name} online (${dados.ip || clientIp || "Rede Local"})`,
+          timestamp: now,
+          type: "CONNECT",
+          employeeId: currentEmp.id,
+          employeeName: currentEmp.name
+        });
+        if (recentActivities.length > 20) recentActivities.pop();
+      }
 
       // GPS
       let newLat = currentEmp.lat;
@@ -1036,9 +1223,9 @@ async function startServer() {
           const impactAccId = `ACC-${Date.now()}`;
           recentActivities.unshift({
             id: `imp-${Date.now()}`,
-            title: "Alerta de Impacto",
-            description: `Impacto detectado: ${parseFloat(dados.aceleracaoG) || 0}g | Pontuação: ${dados.pontuacao}/100`,
-            timestamp: Date.now(),
+            title: `Alerta de Impacto (${resolvedHelmetId})`,
+            description: `Impacto em ${currentEmp.name} [${resolvedHelmetSerial}]: ${parseFloat(dados.aceleracaoG) || 0}g | Score: ${dados.pontuacao}/100`,
+            timestamp: now,
             type: "EMERGENCY",
             employeeId: currentEmp.id,
             employeeName: currentEmp.name
@@ -1088,7 +1275,11 @@ async function startServer() {
         gpsValido: dados.gpsValido === true || dados.gpsValido === "true",
         mapsUrl: dados.mapsUrl || "",
         wifi: dados.wifi || "CONECTADO",
-        ip: dados.ip || clientIp || ""
+        ip: dados.ip || clientIp || "",
+        macAddress: dados.macAddress || matchedHelmet?.macAddress || "",
+        helmetId: resolvedHelmetId,
+        helmetSerial: resolvedHelmetSerial,
+        deviceId: deviceKey
       };
 
       employees[empIndex] = {
@@ -1097,8 +1288,25 @@ async function startServer() {
         lng: newLng,
         status: newStatus,
         lastSeen: now,
+        assignedHelmetId: resolvedHelmetId,
+        assignedHelmetSerial: resolvedHelmetSerial,
         telemetry: telemetryData
       };
+
+      activeEspDevices.set(deviceKey, {
+        data: {
+          ...dados,
+          employeeId: currentEmp.id,
+          employeeName: currentEmp.name,
+          helmetId: resolvedHelmetId,
+          helmetSerial: resolvedHelmetSerial,
+          macAddress: telemetryData.macAddress,
+          ip: telemetryData.ip
+        },
+        updatedAt: ultimaAtualizacao,
+        employeeId: currentEmp.id,
+        helmetId: resolvedHelmetId
+      });
 
       // Sincroniza posição e status no Supabase a cada 10 pacotes ou em emergência
       if (supabase && (signalsReceivedToday % 10 === 0 || isImpact)) {
@@ -1119,7 +1327,7 @@ async function startServer() {
   }
 
   // ============================================================
-  // ROTAS DA API ESP32 (DADOS REAIS DOS SENSORES)
+  // ROTAS DA API ESP32 (DADOS REAIS DOS SENSORES - MULTI-DISPOSITIVO)
   // ============================================================
   app.post("/api/dados", (req, res) => {
     applyESP32Data(req.body, req.ip);
@@ -1130,13 +1338,18 @@ async function startServer() {
   });
 
   app.get("/api/dados", (_req, res) => {
-    if (!latestESP32Data) {
+    if (!latestESP32Data && activeEspDevices.size === 0) {
       return res.status(404).json({
         sucesso: false,
         mensagem: "Ainda não existem dados do ESP32."
       });
     }
-    res.json(latestESP32Data);
+    const devicesList = Array.from(activeEspDevices.values()).map(d => d.data);
+    res.json({
+      ...latestESP32Data,
+      devices: devicesList,
+      activeDevicesCount: devicesList.length
+    });
   });
 
   app.get("/api/employees", (_req, res) => {

@@ -28,9 +28,11 @@ import {
   Cookie,
   ShieldCheck,
   HelpCircle,
-  ExternalLink
+  ExternalLink,
+  Cpu,
+  BatteryCharging
 } from "lucide-react";
-import { Employee, SystemStats, RecentActivity, UserProfile, UserRole } from "../types";
+import { Employee, Helmet, SystemStats, RecentActivity, UserProfile, UserRole } from "../types";
 import { isSupabaseConfigured } from "../services/supabaseClient";
 import { dataService } from "../services/dataService";
 import { motion, AnimatePresence } from "motion/react";
@@ -40,10 +42,11 @@ interface DashboardProps {
   username: string;
   userRole: UserRole;
   employees: Employee[];
+  helmets?: Helmet[];
   stats: SystemStats;
   activities: RecentActivity[];
   currentUser: UserProfile;
-  onNavigateToMap: () => void;
+  onNavigateToMap: (employeeId?: string) => void;
   onLogout: () => void;
   onUpdateUser: (updated: UserProfile) => Promise<boolean | { success: boolean; message?: string }>;
   onOpenHelmetModal: () => void;
@@ -57,6 +60,7 @@ export default function Dashboard({
   username, 
   userRole,
   employees, 
+  helmets = [],
   stats, 
   activities, 
   currentUser, 
@@ -90,9 +94,21 @@ export default function Dashboard({
     return () => unsubscribe();
   }, []);
 
-  // Capacete conectado principal (EMP001 vinculado ao ESP32)
-  const connectedHelmet = employees.find(e => e.id === "EMP001" && e.status !== "OFFLINE") || employees.find(e => e.status !== "OFFLINE") || null;
-  const telemetry = connectedHelmet?.telemetry;
+  // Lista de todos os dispositivos ESP32 / operadores transmitindo ativamente
+  const activeEspStreams = employees.filter((e) => e.status !== "OFFLINE");
+
+  // Função inteligente para resolver o capacete correspondente de cada operador
+  const resolveHelmetForOperator = (emp: Employee): Helmet | undefined => {
+    return helmets.find(
+      (h) =>
+        (emp.assignedHelmetId && h.id.toLowerCase() === emp.assignedHelmetId.toLowerCase()) ||
+        (emp.telemetry?.helmetId && h.id.toLowerCase() === emp.telemetry.helmetId.toLowerCase()) ||
+        (emp.assignedHelmetSerial && h.serialNumber.toLowerCase() === emp.assignedHelmetSerial.toLowerCase()) ||
+        (emp.telemetry?.helmetSerial && h.serialNumber.toLowerCase() === emp.telemetry.helmetSerial.toLowerCase()) ||
+        (emp.telemetry?.macAddress && (h.macAddress || "").toUpperCase() === emp.telemetry.macAddress.toUpperCase()) ||
+        h.assignedEmployeeId === emp.id
+    );
+  };
 
   const isSupabase = isSupabaseConfigured();
   const effectiveRole = currentUser.role || userRole;
@@ -207,7 +223,7 @@ export default function Dashboard({
           </button>
 
           <button
-            onClick={onNavigateToMap}
+            onClick={() => onNavigateToMap()}
             className="px-3.5 py-1.5 rounded-xl bg-yellow-500 hover:bg-yellow-400 text-black text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all shadow-md"
             aria-label="Navegar para o mapa de operações ao vivo"
           >
@@ -482,143 +498,319 @@ export default function Dashboard({
           </div>
         </div>
 
-        {/* Telemetria ao Vivo do ESP32 na Tela Principal */}
-        <div className="px-8 pb-8">
-          <div className="bg-zinc-900/60 border border-white/10 rounded-2xl p-6 shadow-xl backdrop-blur-md">
-            <div className="flex flex-col md:flex-row md:items-center justify-between pb-4 mb-6 border-b border-white/5 gap-4">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-yellow-500/10 border border-yellow-500/30 flex items-center justify-center">
-                  <Activity className="w-5 h-5 text-yellow-500" />
-                </div>
-                <div>
+        {/* Telemetria ao Vivo de Múltiplos Dispositivos ESP32 na Tela Principal */}
+        <div className="px-8 pb-8 space-y-5">
+          {/* Cabeçalho Inteligente Multi-ESP32 */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-zinc-900/50 border border-white/10 rounded-2xl p-5 backdrop-blur-md">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-yellow-500/10 border border-yellow-500/30 flex items-center justify-center shrink-0">
+                <Activity className="w-5 h-5 text-yellow-500" />
+              </div>
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
                   <h2 className="text-base font-bold text-white tracking-wide">
-                    Telemetria ao Vivo do Dispositivo ESP32 (Hardware IoT)
+                    Central de Telemetria Multi-ESP32 (Correlação Capacete ↔ Operador)
                   </h2>
-                  <p className="text-xs text-zinc-400">
-                    Operador Vinculado: <span className="text-yellow-400 font-semibold">{connectedHelmet?.name || "Gabriel Araújo (EMP001)"}</span> • IP Local: <span className="font-mono text-zinc-300">{telemetry?.ip || "192.168.0.122"}</span>
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <span className="flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-green-500/10 text-green-400 border border-green-500/20">
-                  <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                  Transmissão Contínua (1 Hz)
-                </span>
-                <button
-                  onClick={onNavigateToMap}
-                  className="px-4 py-1.5 rounded-xl bg-yellow-500 hover:bg-yellow-400 text-black text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all shadow-md"
-                >
-                  <MapIcon className="w-3.5 h-3.5" />
-                  Ver no Mapa
-                </button>
-              </div>
-            </div>
-
-            {/* Grid de Sensores */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              {/* Força G Atual */}
-              <div className="bg-zinc-950/70 p-4 rounded-xl border border-white/5">
-                <div className="flex justify-between items-start mb-2">
-                  <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">
-                    {effectiveRole === "MASTER" ? "Aceleração (MPU6050)" : "Aceleração Cinemática"}
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-yellow-500/15 text-yellow-400 border border-yellow-500/30">
+                    {activeEspStreams.length} {activeEspStreams.length === 1 ? "ESP32 Transmitindo" : "ESP32s Transmitindo"}
                   </span>
-                  <Gauge className="w-4 h-4 text-yellow-500" />
                 </div>
-                <div className="text-3xl font-bold text-white font-mono">
-                  {telemetry?.aceleracaoG !== undefined ? telemetry.aceleracaoG.toFixed(2) : "1.00"} <span className="text-sm font-bold text-yellow-500 font-sans">G</span>
-                </div>
-                <p className="text-[11px] text-zinc-500 mt-2">
-                  Pico Máximo Registrado: <strong className="text-zinc-300">
-                    {telemetry?.picoAceleracaoG !== undefined && telemetry.picoAceleracaoG > 0
-                      ? telemetry.picoAceleracaoG.toFixed(2)
-                      : (telemetry?.picoG !== undefined && telemetry.picoG > 0
-                          ? telemetry.picoG.toFixed(2)
-                          : (telemetry?.aceleracaoG !== undefined && telemetry.aceleracaoG > 0 
-                              ? telemetry.aceleracaoG.toFixed(2) 
-                              : "1.00"))} G
-                  </strong>
+                <p className="text-xs text-zinc-400 mt-0.5">
+                  Cada microcontrolador ESP32 ativo gera automaticamente sua própria linha de telemetria vinculada ao capacete e operador correspondentes no Supabase.
                 </p>
               </div>
+            </div>
 
-              {/* Pontuação de Risco / Impacto */}
-              <div className="bg-zinc-950/70 p-4 rounded-xl border border-white/5">
-                <div className="flex justify-between items-start mb-2">
-                  <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Pontuação de Impacto</span>
-                  <Zap className="w-4 h-4 text-red-400" />
-                </div>
-                <div className="flex items-baseline gap-1">
-                  <span className={`text-3xl font-bold font-mono ${(telemetry?.pontuacao ?? 0) >= 60 ? "text-red-500" : "text-green-400"}`}>
-                    {telemetry?.pontuacao ?? 10}
-                  </span>
-                  <span className="text-sm font-bold text-zinc-500 font-mono">/100</span>
-                </div>
-                <div className="w-full bg-zinc-800 h-2 rounded-full overflow-hidden mt-3">
-                  <div 
-                    className={`h-full transition-all duration-300 ${
-                      (telemetry?.pontuacao ?? 0) >= 60 ? "bg-red-500" : "bg-green-500"
-                    }`}
-                    style={{ width: `${Math.min(Math.max((telemetry?.pontuacao ?? 10), 5), 100)}%` }}
-                  />
-                </div>
-              </div>
-
-              {/* Sensores SW-420 e FC-04 */}
-              <div className="bg-zinc-950/70 p-4 rounded-xl border border-white/5 space-y-2.5">
-                <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest block">
-                  {effectiveRole === "MASTER" ? "Módulos de Detecção (Hardware)" : "Sensores de Proteção"}
-                </span>
-                <div className="flex justify-between items-center text-xs">
-                  <span className="text-zinc-400">
-                    {effectiveRole === "MASTER" ? "Vibração (SW-420):" : "Sensor de Vibração:"}
-                  </span>
-                  <span className={`font-bold px-2 py-0.5 rounded text-[10px] uppercase ${
-                    telemetry?.vibracao ? "bg-red-500/20 text-red-400 border border-red-500/30" : "bg-zinc-800 text-zinc-400"
-                  }`}>
-                    {telemetry?.vibracao ? "Detectada" : "Estável"}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center text-xs">
-                  <span className="text-zinc-400">
-                    {effectiveRole === "MASTER" ? "Ruído/Som (FC-04):" : "Sensor Acústico:"}
-                  </span>
-                  <span className={`font-bold px-2 py-0.5 rounded text-[10px] uppercase ${
-                    telemetry?.som ? "bg-blue-500/20 text-blue-400 border border-blue-500/30" : "bg-zinc-800 text-zinc-400"
-                  }`}>
-                    {telemetry?.som ? "Som Ativo" : "Normal"}
-                  </span>
-                </div>
-              </div>
-
-              {/* GPS NEO-6M & Satélites */}
-              <div className="bg-zinc-950/70 p-4 rounded-xl border border-white/5">
-                <div className="flex justify-between items-start mb-2">
-                  <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">
-                    {effectiveRole === "MASTER" ? "GPS (NEO-6M)" : "Geolocalização / GPS"}
-                  </span>
-                  <MapPin className="w-4 h-4 text-yellow-500" />
-                </div>
-                <div className="text-xs space-y-1 mt-1">
-                  <div className="flex justify-between text-zinc-400">
-                    <span>Sinal Satélite:</span>
-                    <strong className={telemetry?.gpsValido ? "text-green-400" : "text-yellow-500"}>
-                      {telemetry?.gpsValido ? "Sinal Válido" : "Aguardando Visada"}
-                    </strong>
-                  </div>
-                  <div className="flex justify-between text-zinc-400">
-                    <span>Coordenadas:</span>
-                    <span className="font-mono text-[11px] text-zinc-200">
-                      {connectedHelmet != null ? `${connectedHelmet.lat.toFixed(4)}, ${connectedHelmet.lng.toFixed(4)}` : "-- , --"}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-zinc-400">
-                    <span>Altitude:</span>
-                    <span className="text-zinc-200">{telemetry?.altitude ?? 0} m</span>
-                  </div>
-                </div>
-              </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
+                activeEspStreams.length > 0
+                  ? "bg-green-500/10 text-green-400 border-green-500/20"
+                  : "bg-zinc-800 text-zinc-400 border-zinc-700"
+              }`}>
+                <span className={`w-2 h-2 rounded-full ${activeEspStreams.length > 0 ? "bg-green-500 animate-pulse" : "bg-zinc-500"}`} />
+                {activeEspStreams.length > 0 ? "Recepção Contínua (1 Hz)" : "Aguardando Pacotes ESP32"}
+              </span>
+              <button
+                onClick={() => onNavigateToMap()}
+                className="px-4 py-1.5 rounded-xl bg-yellow-500 hover:bg-yellow-400 text-black text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all shadow-md cursor-pointer"
+              >
+                <MapIcon className="w-3.5 h-3.5" />
+                Ver Mapa Geral
+              </button>
             </div>
           </div>
+
+          {/* Linhas/Barras Dinâmicas de Telemetria — Uma barra para cada ESP32 enviando dados */}
+          {activeEspStreams.length > 0 ? (
+            <div className="space-y-4">
+              {activeEspStreams.map((emp, streamIndex) => {
+                const matchedHelmet = resolveHelmetForOperator(emp);
+                const telemetry = emp.telemetry;
+                const helmetIdBadge =
+                  matchedHelmet?.id ||
+                  emp.assignedHelmetId ||
+                  telemetry?.helmetId ||
+                  `ESP32-#${streamIndex + 1}`;
+                const helmetSerialBadge =
+                  matchedHelmet?.serialNumber ||
+                  emp.assignedHelmetSerial ||
+                  telemetry?.helmetSerial ||
+                  "S/N Não Informado";
+                const helmetMacBadge =
+                  telemetry?.macAddress ||
+                  matchedHelmet?.macAddress ||
+                  "MAC Automático";
+                const helmetFirmware = matchedHelmet?.firmwareVersion || "v1.0.4";
+                const batteryLevel = Math.round(emp.battery ?? matchedHelmet?.battery ?? 100);
+                const isNodeEmergency = emp.status === "EMERGENCY" || (telemetry?.pontuacao ?? 0) >= 60;
+
+                return (
+                  <div
+                    key={emp.id}
+                    className={`bg-zinc-900/70 border rounded-2xl p-6 shadow-xl backdrop-blur-md transition-all ${
+                      isNodeEmergency
+                        ? "border-red-500/50 shadow-red-950/20"
+                        : "border-white/10 hover:border-yellow-500/30"
+                    }`}
+                  >
+                    {/* Barra de Identificação Inteligente: Operador + Capacete Correspondente */}
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between pb-4 mb-5 border-b border-white/5 gap-4">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <div className={`w-11 h-11 rounded-xl border flex flex-col items-center justify-center shrink-0 ${
+                          isNodeEmergency
+                            ? "bg-red-500/15 border-red-500/40 text-red-400"
+                            : "bg-yellow-500/10 border-yellow-500/30 text-yellow-500"
+                        }`}>
+                          <HardHat className="w-5 h-5" />
+                          <span className="text-[8px] font-mono font-bold">#{streamIndex + 1}</span>
+                        </div>
+
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm font-bold text-white">
+                              {emp.name}
+                            </span>
+                            <span className="px-2 py-0.5 rounded-md bg-zinc-800 border border-white/10 text-[10px] font-mono text-zinc-300">
+                              Operador ID: {emp.id}
+                            </span>
+                            <span className="px-2.5 py-0.5 rounded-md bg-yellow-500/15 border border-yellow-500/30 text-[10px] font-mono font-bold text-yellow-400 flex items-center gap-1">
+                              <Cpu className="w-3 h-3" />
+                              Capacete: {helmetIdBadge} ({helmetSerialBadge})
+                            </span>
+                            {isNodeEmergency && (
+                              <span className="px-2.5 py-0.5 rounded-full bg-red-500/20 border border-red-500/40 text-[10px] font-bold uppercase text-red-400 animate-pulse">
+                                Impacto Crítico Detectado
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-400 mt-1.5">
+                            <span>
+                              Função: <strong className="text-zinc-200">{emp.roleFunction || "Operador Industrial"}</strong>
+                            </span>
+                            <span>•</span>
+                            <span>
+                              Setor: <strong className="text-zinc-200">{emp.department || "Campo"}</strong>
+                            </span>
+                            <span>•</span>
+                            <span>
+                              IP ESP32: <strong className="font-mono text-zinc-200">{telemetry?.ip || "Direto / WebSocket"}</strong>
+                            </span>
+                            <span>•</span>
+                            <span>
+                              MAC: <strong className="font-mono text-zinc-300">{helmetMacBadge}</strong>
+                            </span>
+                            <span>•</span>
+                            <span className="flex items-center gap-1">
+                              <BatteryCharging className="w-3.5 h-3.5 text-green-400" />
+                              <strong className="text-zinc-200">{batteryLevel}%</strong> ({helmetFirmware})
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
+                          isNodeEmergency
+                            ? "bg-red-500/15 text-red-400 border-red-500/30"
+                            : "bg-green-500/10 text-green-400 border-green-500/20"
+                        }`}>
+                          {emp.status}
+                        </span>
+                        <button
+                          onClick={() => onNavigateToMap(emp.id)}
+                          className="px-3.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-yellow-500 text-zinc-200 hover:text-black border border-white/10 text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all cursor-pointer"
+                        >
+                          <MapPin className="w-3.5 h-3.5" />
+                          Focar no Mapa
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Grid de Sensores desta Barra ESP32 */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                      {/* Força G Atual */}
+                      <div className="bg-zinc-950/70 p-4 rounded-xl border border-white/5">
+                        <div className="flex justify-between items-start mb-2">
+                          <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">
+                            {effectiveRole === "MASTER" ? "Aceleração (MPU6050)" : "Aceleração Cinemática"}
+                          </span>
+                          <Gauge className="w-4 h-4 text-yellow-500" />
+                        </div>
+                        <div className="text-3xl font-bold text-white font-mono">
+                          {telemetry?.aceleracaoG !== undefined ? telemetry.aceleracaoG.toFixed(2) : "0.00"}{" "}
+                          <span className="text-sm font-bold text-yellow-500 font-sans">G</span>
+                        </div>
+                        <p className="text-[11px] text-zinc-500 mt-2">
+                          Pico Máximo Registrado:{" "}
+                          <strong className="text-zinc-300">
+                            {telemetry?.picoAceleracaoG !== undefined && telemetry.picoAceleracaoG > 0
+                              ? telemetry.picoAceleracaoG.toFixed(2)
+                              : telemetry?.picoG !== undefined && telemetry.picoG > 0
+                              ? telemetry.picoG.toFixed(2)
+                              : telemetry?.aceleracaoG !== undefined
+                              ? telemetry.aceleracaoG.toFixed(2)
+                              : "0.00"}{" "}
+                            G
+                          </strong>
+                        </p>
+                      </div>
+
+                      {/* Pontuação de Risco / Impacto */}
+                      <div className="bg-zinc-950/70 p-4 rounded-xl border border-white/5">
+                        <div className="flex justify-between items-start mb-2">
+                          <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">
+                            Pontuação de Impacto
+                          </span>
+                          <Zap className="w-4 h-4 text-red-400" />
+                        </div>
+                        <div className="flex items-baseline gap-1">
+                          <span
+                            className={`text-3xl font-bold font-mono ${
+                              (telemetry?.pontuacao ?? 0) >= 60 ? "text-red-500" : "text-green-400"
+                            }`}
+                          >
+                            {telemetry?.pontuacao ?? 0}
+                          </span>
+                          <span className="text-sm font-bold text-zinc-500 font-mono">/100</span>
+                        </div>
+                        <div className="w-full bg-zinc-800 h-2 rounded-full overflow-hidden mt-3">
+                          <div
+                            className={`h-full transition-all duration-300 ${
+                              (telemetry?.pontuacao ?? 0) >= 60 ? "bg-red-500" : "bg-green-500"
+                            }`}
+                            style={{ width: `${Math.min(Math.max(telemetry?.pontuacao ?? 0, 4), 100)}%` }}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Sensores SW-420 e FC-04 */}
+                      <div className="bg-zinc-950/70 p-4 rounded-xl border border-white/5 space-y-2.5">
+                        <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest block">
+                          {effectiveRole === "MASTER" ? "Módulos de Detecção (Hardware)" : "Sensores de Proteção"}
+                        </span>
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="text-zinc-400">
+                            {effectiveRole === "MASTER" ? "Vibração (SW-420):" : "Sensor de Vibração:"}
+                          </span>
+                          <span
+                            className={`font-bold px-2 py-0.5 rounded text-[10px] uppercase ${
+                              telemetry?.vibracao
+                                ? "bg-red-500/20 text-red-400 border border-red-500/30"
+                                : "bg-zinc-800 text-zinc-400"
+                            }`}
+                          >
+                            {telemetry?.vibracao ? "Detectada" : "Estável"}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="text-zinc-400">
+                            {effectiveRole === "MASTER" ? "Ruído/Som (FC-04):" : "Sensor Acústico:"}
+                          </span>
+                          <span
+                            className={`font-bold px-2 py-0.5 rounded text-[10px] uppercase ${
+                              telemetry?.som
+                                ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                                : "bg-zinc-800 text-zinc-400"
+                            }`}
+                          >
+                            {telemetry?.som ? "Som Ativo" : "Normal"}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* GPS NEO-6M & Satélites */}
+                      <div className="bg-zinc-950/70 p-4 rounded-xl border border-white/5">
+                        <div className="flex justify-between items-start mb-2">
+                          <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">
+                            {effectiveRole === "MASTER" ? "GPS (NEO-6M)" : "Geolocalização / GPS"}
+                          </span>
+                          <MapPin className="w-4 h-4 text-yellow-500" />
+                        </div>
+                        <div className="text-xs space-y-1 mt-1">
+                          <div className="flex justify-between text-zinc-400">
+                            <span>Sinal Satélite:</span>
+                            <strong className={telemetry?.gpsValido ? "text-green-400" : "text-yellow-500"}>
+                              {telemetry?.gpsValido ? "Sinal Válido" : "Aguardando Visada"}
+                            </strong>
+                          </div>
+                          <div className="flex justify-between text-zinc-400">
+                            <span>Coordenadas:</span>
+                            <span className="font-mono text-[11px] text-zinc-200">
+                              {emp.lat.toFixed(4)}, {emp.lng.toFixed(4)}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-zinc-400">
+                            <span>Altitude:</span>
+                            <span className="text-zinc-200">{telemetry?.altitude ?? 0} m</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            /* Estado Real quando nenhum ESP32 está enviando pacotes no momento (Sem dados falsos/seed) */
+            <div className="bg-zinc-900/60 border border-white/10 rounded-2xl p-6 text-center">
+              <div className="w-12 h-12 rounded-2xl bg-zinc-800 border border-white/10 flex items-center justify-center mx-auto mb-3">
+                <Radio className="w-6 h-6 text-zinc-400" />
+              </div>
+              <h3 className="text-sm font-bold text-white uppercase tracking-wider">
+                Nenhum Capacete ESP32 Transmitindo Pacotes no Momento
+              </h3>
+              <p className="text-xs text-zinc-400 max-w-xl mx-auto mt-1">
+                Assim que um ou mais microcontroladores ESP32 enviarem dados para <code className="text-yellow-400 font-mono">/api/dados</code>, uma barra de telemetria dedicada será adicionada automaticamente identificando o capacete e o operador vinculado no Supabase.
+              </p>
+
+              {employees.length > 0 && (
+                <div className="mt-5 pt-4 border-t border-white/5">
+                  <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-3">
+                    Operadores & Capacetes Cadastrados no Banco Real ({employees.length})
+                  </p>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {employees.map((emp) => {
+                      const h = resolveHelmetForOperator(emp);
+                      return (
+                        <div
+                          key={emp.id}
+                          className="px-3 py-1.5 rounded-xl bg-zinc-950 border border-white/5 text-xs flex items-center gap-2 text-zinc-300"
+                        >
+                          <HardHat className="w-3.5 h-3.5 text-zinc-500" />
+                          <span className="font-semibold">{emp.name}</span>
+                          <span className="text-[10px] font-mono text-zinc-500">({emp.id})</span>
+                          <span className="text-[10px] font-mono text-yellow-500/80">
+                            • {h ? `${h.id} [${h.serialNumber}]` : emp.assignedHelmetId || "Sem Capacete"}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Bottom Sections: Atividades & Atalhos de Controle */}

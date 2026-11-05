@@ -1,5 +1,5 @@
-import { Employee } from "../types";
-import { HardHat, Battery, Signal, AlertCircle, MapPin } from "lucide-react";
+import { Employee, Helmet } from "../types";
+import { HardHat, Battery, Signal, AlertCircle, Cpu } from "lucide-react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
@@ -9,12 +9,26 @@ function cn(...inputs: ClassValue[]) {
 
 interface SidebarProps {
   employees: Employee[];
+  helmets?: Helmet[];
   selectedEmployeeId: string | null;
   onSelectEmployee: (id: string) => void;
   onIgnoreEmergency: (id: string) => void;
 }
 
-export default function Sidebar({ employees, selectedEmployeeId, onSelectEmployee, onIgnoreEmergency }: SidebarProps) {
+export default function Sidebar({ employees, helmets = [], selectedEmployeeId, onSelectEmployee, onIgnoreEmergency }: SidebarProps) {
+  const resolveHelmetBadge = (emp: Employee) => {
+    const matched = helmets.find(
+      (h) =>
+        (emp.assignedHelmetId && h.id.toLowerCase() === emp.assignedHelmetId.toLowerCase()) ||
+        (emp.telemetry?.helmetId && h.id.toLowerCase() === emp.telemetry.helmetId.toLowerCase()) ||
+        h.assignedEmployeeId === emp.id
+    );
+    const hId = matched?.id || emp.assignedHelmetId || emp.telemetry?.helmetId;
+    const hSerial = matched?.serialNumber || emp.assignedHelmetSerial || emp.telemetry?.helmetSerial;
+    if (!hId && !hSerial) return "Sem Capacete Vinculado";
+    return hSerial && hSerial !== hId ? `${hId} (${hSerial})` : hId;
+  };
+
   const getStatusColor = (status: string) => {
     switch (status) {
       case "ONLINE": return "bg-green-500";
@@ -64,7 +78,11 @@ export default function Sidebar({ employees, selectedEmployeeId, onSelectEmploye
               <div className="flex justify-between items-start mb-2">
                 <div>
                   <h3 className="font-semibold text-zinc-100">{emp.name}</h3>
-                  <p className="text-xs text-zinc-500">ID: {emp.id}</p>
+                  <p className="text-xs text-zinc-500 font-mono">Operador: {emp.id}</p>
+                  <p className="text-[10px] text-yellow-500/90 font-mono flex items-center gap-1 mt-1">
+                    <Cpu className="w-3 h-3" />
+                    <span>{resolveHelmetBadge(emp)}</span>
+                  </p>
                 </div>
                 <div className={cn("w-2.5 h-2.5 rounded-full", getStatusColor(emp.status))} />
               </div>
@@ -112,13 +130,13 @@ export default function Sidebar({ employees, selectedEmployeeId, onSelectEmploye
 
       <div className="p-4 bg-zinc-950 border-t border-zinc-800">
         <div className="flex justify-between items-center text-[10px] text-zinc-500 uppercase tracking-widest font-bold">
-          <span>Connected Devices</span>
+          <span>Dispositivos Conectados</span>
           <span className="text-zinc-300">{employees.filter(e => e.status !== "OFFLINE").length}/{employees.length}</span>
         </div>
         <div className="w-full bg-zinc-900 h-1.5 mt-2 rounded-full overflow-hidden">
           <div 
             className="bg-yellow-500 h-full transition-all duration-500" 
-            style={{ width: `${(employees.filter(e => e.status !== "OFFLINE").length / employees.length) * 100}%` }}
+            style={{ width: `${employees.length > 0 ? (employees.filter(e => e.status !== "OFFLINE").length / employees.length) * 100 : 0}%` }}
           />
         </div>
       </div>
