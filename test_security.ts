@@ -336,22 +336,21 @@ async function main() {
       const username = "Gbxm";
       const role = "COMPANY_ADMIN";
       const loginAt = Date.now() - 60000;
-      const lastActivityAt = Date.now();
       const tokenVersion = 1;
 
-      const signature = await generateSessionSignature(username, role, loginAt, lastActivityAt, tokenVersion);
+      const signature = await generateSessionSignature(username, role, loginAt, tokenVersion);
       assert(signature.length === 64, "A assinatura SHA-256 deve ter 64 caracteres hexadecimais");
 
-      const validCheck = await verifySessionSignature(username, role, loginAt, lastActivityAt, tokenVersion, signature);
+      const validCheck = await verifySessionSignature(username, role, loginAt, tokenVersion, signature);
       assert(validCheck === true, "Sessão íntegra deve ser validada com sucesso após Ctrl+R / F5");
 
       // Tentativa de escalação de privilégio local (VIEWER -> MASTER)
-      const tamperedRoleCheck = await verifySessionSignature(username, "MASTER", loginAt, lastActivityAt, tokenVersion, signature);
+      const tamperedRoleCheck = await verifySessionSignature(username, "MASTER", loginAt, tokenVersion, signature);
       assert(tamperedRoleCheck === false, "Alteração não autorizada de role no LocalStorage deve invalidar a assinatura imediatamente");
 
-      // Tentativa de burlar o timeout de inatividade alterando lastActivityAt sem assinar
-      const tamperedActivityCheck = await verifySessionSignature(username, role, loginAt, lastActivityAt + 5000, tokenVersion, signature);
-      assert(tamperedActivityCheck === false, "Adulteração do timestamp de atividade deve invalidar a assinatura");
+      // Tentativa de burlar o versionamento de token / loginAt sem assinar
+      const tamperedTokenCheck = await verifySessionSignature(username, role, loginAt, tokenVersion + 1, signature);
+      assert(tamperedTokenCheck === false, "Adulteração do tokenVersion deve invalidar a assinatura");
     }
   );
 

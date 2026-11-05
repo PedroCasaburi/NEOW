@@ -105,9 +105,9 @@ export default function App() {
           setUserRole(result.session.role);
           setCurrentUser(result.session.user);
           setLoginError("");
-        } else if (result.expiredReason) {
+        } else if (result.reason) {
           setIsAuthenticated(false);
-          setLoginError(result.expiredReason);
+          setLoginError(result.reason);
         }
       } catch (err) {
         console.error("[Sessão] Erro ao restaurar sessão:", err);
@@ -171,7 +171,7 @@ export default function App() {
     const cloudValidationInterval = setInterval(async () => {
       const check = await dataService.validateAndRestoreSession();
       if (!check.valid) {
-        forceLogoutWithReason(check.expiredReason || "Sessão invalidada pelo controle de segurança RBAC.");
+        forceLogoutWithReason(check.reason || "Sessão invalidada pelo controle de segurança RBAC.");
         return;
       }
       if (check.session) {
@@ -187,7 +187,7 @@ export default function App() {
       if (document.visibilityState === "visible") {
         const check = await dataService.validateAndRestoreSession();
         if (!check.valid) {
-          forceLogoutWithReason(check.expiredReason || "Sessão expirada durante ausência da aba.");
+          forceLogoutWithReason(check.reason || "Sessão expirada durante ausência da aba.");
         } else if (check.session) {
           setUserRole(check.session.role);
           setCurrentUser(check.session.user);
@@ -676,10 +676,11 @@ export default function App() {
           active: true,
           tokenVersion: data.user.tokenVersion || 1
         };
-        await dataService.createSession(loggedProfile, loggedProfile.tokenVersion || 1);
+        const effectiveRole: UserRole = data.user.role || "VIEWER";
+        await dataService.createSession(loggedProfile, effectiveRole, loggedProfile.tokenVersion || 1);
         setIsAuthenticated(true);
         setUsername(loggedProfile.username);
-        setUserRole(loggedProfile.role);
+        setUserRole(effectiveRole);
         setCurrentUser(loggedProfile);
         setLoginError("");
         setLoginSuccessMessage("");
@@ -697,7 +698,7 @@ export default function App() {
       if (res.success) {
         setCurrentUser(updated);
         setUsername(updated.username);
-        await dataService.createSession(updated, updated.tokenVersion || 1);
+        await dataService.createSession(updated, updated.role || userRole, updated.tokenVersion || 1);
         return { success: true, message: res.message || "Perfil atualizado e sincronizado com o Supabase com sucesso!" };
       } else {
         return { success: false, message: res.message || "Erro ao atualizar perfil no Supabase." };

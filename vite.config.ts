@@ -22,6 +22,7 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: 'dist',
+      chunkSizeWarningLimit: 1000,
       // Sourcemaps apenas em desenvolvimento (não expõe código fonte em produção)
       sourcemap: !isProd,
       // Remove console.log e debugger em produção
